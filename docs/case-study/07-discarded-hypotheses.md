@@ -6,28 +6,105 @@ useful so the next one can reach the right answer faster.
 ## H1 - "It's the Recursion FPS Fix"
 
 ### Belief
-The user had `RecursionFPSFix.dll` installed; it patches a recursion
-issue in Skyrim's renderer. Early hypothesis: maybe its detection logic
-or its message-box popup was misbehaving and causing the freeze.
+The user had `RecursionFPSFix.dll` installed; it hooks the Papyrus
+`StackFrameOverFlow` site (Address ID 98130/104853 +0x7F) and cancels
+recursive calls past 1000 frames. Early hypothesis: maybe its detection
+logic or its message-box popup was misbehaving and causing the freeze.
 
 ### Evidence considered
 - `RecursionFPSFix.dll` was loaded.
 - The recursion-fix codebase (a sibling project we have read access to)
-  contains both an early-out hot path and a popup path.
+  contains both a fast scan-and-cancel path and a notification path.
 
-### Why we ruled it out
-1. The user clarified: a *hard freeze* is observed, not a popup.
-   The recursion fix only ever fires a popup; if the popup never
-   appeared, the recursion fix never fired.
+### Why "Recursion FPS Fix causes the freeze" is ruled out
+1. The user clarified: a *hard freeze* is observed, not a popup. The
+   updated version uses a corner toast (`RE::DebugNotification`) by
+   default, not a modal `RE::DebugMessageBox`. Even when configured as
+   a popup, the popup never appeared during these freezes.
 2. Reproduced the freeze with Recursion FPS Fix disabled. Same Site A
    wait signature.
 3. Stack traces never show any `RecursionFPSFix.dll` frame on either
-   the main thread or any worker.
+   the main thread or any worker at freeze time.
+
+The mod is not on the lock-acquiring code paths and is not present in
+any frame at freeze time. It is therefore not the cause of the AB-BA
+deadlock.
+
+### Open question: empirical observation of fewer freezes with the
+updated version
+
+The user observed that freezes were noticeably less frequent with the
+**updated** Recursion FPS Fix (the `recursion-fix-updated` checkout)
+compared to the **original** version. We cannot fully explain this
+from the source diff. Important constraint: the user reports that the
+recursion threshold (Papyrus stack > 1000 frames) **has never fired**
+in either version - no popup and no toast have ever been seen.
+
+This rules out the most natural explanation. The two versions differ
+substantially on the *trigger path* (modal popup vs. corner toast,
+bounded vs. unbounded scan, `std::string` vs. `std::string_view`,
+once-per-session suppression vs. per-event firing) but those paths
+only execute when the threshold trips. If the threshold has never
+tripped, the trigger-path differences are irrelevant.
+
+On the *cold path* (the code that runs every time the hook is invoked
+when the threshold is *not* exceeded), the two versions are
+essentially identical:
+
+```
+old:  if (a_stack && a_stack->frames > 1000) { /* never enters */ }
+      return func(...);
+
+new:  if (a_stack && a_stack->frames > kPapyrusStackLimit
+              && a_funcCallQuery != nullptr) { /* never enters */ }
+      return func(...);
+```
+
+The new version performs one additional null-check per invocation.
+Otherwise the cold path is the same: same hook target, same trampoline
+mechanism, same tail call to the engine's original implementation.
+`StackOverFlowLogHook` shows the same shape. `PCH.h` and `main.cpp`
+contain only logger-configuration differences that do not affect the
+hot path.
+
+Conclusion: from the source alone, we cannot identify a mechanism
+that would make the updated version reduce freeze frequency when the
+recursion trigger never fires in either version.
+
+Possible explanations (in rough order of likelihood):
+
+1. **Statistical noise.** The AB-BA race is probabilistic and rare.
+   A multi-hour play session without a freeze is consistent both with
+   "the change helped" and "the change was inert and you got lucky".
+   The available freeze-log corpus (~18 reports across 5 days) is not
+   large enough to distinguish a true frequency reduction from
+   variance.
+2. **A confounding variable.** Switching versions of one mod is rarely
+   the only thing that changes between play sessions: Nolvus updates,
+   Windows or driver updates, different play content (combat density,
+   cell complexity, NPC count), MO2 load-order changes, machine
+   reboots, etc. Any of these can shift worker-pool concurrency in
+   ways that are independent of Recursion FPS Fix's diff.
+3. **A hidden mechanism not visible in the source.** Possible but
+   speculative; we cannot point to it without further evidence.
+
+This question is left open. If a future freeze-frequency study with
+controlled conditions becomes available (same Nolvus build, same
+playthrough, same hardware, alternating versions over many hours)
+we may revisit the conclusion.
 
 ### Lesson
 "Mod is loaded and on the stack" is not evidence that "mod is the
 cause". Mods that hook hot engine functions appear on every captured
 stack regardless of whether they are involved.
+
+Equally: an empirical observation of "X version of Y mod produces
+fewer freezes" is *evidence* but not *proof* of a causal mechanism.
+For probabilistic engine bugs, single-machine longitudinal
+comparisons are dominated by confounders and small-sample variance.
+A clean technical explanation requires a measurable difference on
+the code paths that actually run, not just on paths that *would*
+run if the trigger fired.
 
 ## H2 - "It's HDT-SMP"
 

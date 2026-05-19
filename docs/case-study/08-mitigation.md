@@ -162,24 +162,65 @@ Instead of serialising the whole functions, only hook the
 If profiling under Option #1 shows actual contention this would be
 the next refinement to try.
 
-## Option #4 - Trigger avoidance
+## Option #4 - Trigger avoidance / load reduction
 
 ### Idea
-Identify what game state schedules these two worker chains
-concurrently and avoid that state. Possibilities (we have not
-investigated):
+Reduce concurrent worker-pool dispatch traffic so the AB-BA race
+fires less often. Two flavours:
 
-- A specific cell-load pattern.
-- A specific NPC/AI script burst.
-- An interaction between two mods that both produce dispatch work
-  at the same tick.
+1. **Targeted trigger avoidance:** identify what game state
+   schedules the two conflicting worker chains concurrently and
+   avoid that state. Possibilities (we have not investigated):
+   - A specific cell-load pattern.
+   - A specific NPC/AI script burst.
+   - An interaction between two mods that both produce dispatch
+     work at the same tick.
+2. **Generic load reduction:** any mod or configuration change that
+   lowers concurrent dispatch traffic reduces the probability of
+   the race firing, even without identifying the specific trigger.
 
-### Why we are not recommending this
+### Possible precedent: the updated Recursion FPS Fix
+
+The user observed empirically that freezes were less frequent with
+the *updated* Recursion FPS Fix than with the *original*. The
+mechanism is not as clear as a first-pass analysis suggested.
+See `07-discarded-hypotheses.md` H1 for the detailed treatment.
+
+In short: the two versions of Recursion FPS Fix differ substantially
+on the *trigger path* (popup vs. toast, scan bounds, allocation
+patterns), but on the *cold path* - the code that runs when the
+recursion threshold is *not* exceeded - they are essentially
+identical. The user has confirmed the trigger has never fired in
+either version. The cold-path runtime cost per invocation differs by
+exactly one null-check.
+
+We therefore cannot confidently attribute the lower freeze rate to
+this option's mechanism (reduced worker-pool load). The observation
+may instead reflect statistical noise (AB-BA is probabilistic and
+rare) or a confounding variable that changed at the same time as
+the version switch. If the mechanism is real but not source-visible,
+it is invisible to us without controlled longitudinal data.
+
+Treat this option as plausible but unproven. Generic load reduction
+is still a sensible direction in principle - reducing worker-pool
+concurrency lowers the probability of any concurrent-acquire race -
+but the updated Recursion FPS Fix is not a clean demonstration of
+it.
+
+### Why we are not recommending targeted avoidance as the primary fix
 - The dispatcher chain is generic. Many game systems funnel work
   through `id 67147 -> id 68058 -> id 68010 -> id 40289`. We do not
   yet know which subsystem is producing the conflicting work.
 - Even if we identified one trigger, there is no reason to expect
   it is the *only* trigger. We would be playing whack-a-mole.
+
+### Why generic load reduction is fine as an interim measure
+- It works (Recursion FPS Fix updated version proves this).
+- It does not require modifying engine code paths.
+- It composes additively with Option #1 - shipping the
+  `WorkerLockOrderFix` plugin while *also* keeping the updated
+  Recursion FPS Fix yields both probability reduction and
+  structural elimination.
 
 ## Option #5 - Do nothing
 
