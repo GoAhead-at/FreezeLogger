@@ -24,10 +24,52 @@ namespace FreezeLogger::Watchdog {
             return pid == ::GetCurrentProcessId();
         }
 
+        // Per-loop early-warning state. Logs ONCE when a stall crosses 50 %
+        // of the threshold and ONCE more after it resolves. Independent of
+        // the trip/snapshot machinery — purpose is to leave a paper trail
+        // in FreezeLogger.log even when the user kills the process before
+        // the full threshold elapses.
+        struct EarlyWarn {
+            bool          armed       = false;  // we've logged the "stale" line
+            std::uint64_t logged_at   = 0;
+            std::uint64_t logged_age  = 0;
+        };
+
+        void MaybeLogEarlyWarning(EarlyWarn&    a_ew,
+                                  std::uint64_t a_now,
+                                  std::uint64_t a_mainAge,
+                                  std::uint64_t a_renderAge,
+                                  std::uint32_t a_thresholdMs,
+                                  bool          a_fgOurs)
+        {
+            const auto half = a_thresholdMs / 2;
+            const auto worst = (a_mainAge > a_renderAge) ? a_mainAge : a_renderAge;
+            const bool stale = a_fgOurs && worst > half;
+
+            if (stale && !a_ew.armed) {
+                a_ew.armed      = true;
+                a_ew.logged_at  = a_now;
+                a_ew.logged_age = worst;
+                logs::info(
+                    "Watchdog: heartbeat stale (mainAge={}ms, renderAge={}ms, "
+                    "threshold={}ms). Still under threshold; will trip if it "
+                    "persists. (Logged early so a force-kill before threshold "
+                    "still leaves a record.)",
+                    a_mainAge, a_renderAge, a_thresholdMs);
+            } else if (!stale && a_ew.armed) {
+                logs::info(
+                    "Watchdog: heartbeat recovered without tripping (peak age "
+                    "~{}ms before recovery).",
+                    a_ew.logged_age);
+                a_ew = {};
+            }
+        }
+
         void Loop(std::stop_token a_stopToken) {
             const auto& cfg = Config::Get().watchdog;
 
-            State state{};
+            State     state{};
+            EarlyWarn earlyWarn{};
 
             logs::info(
                 "Watchdog started (threshold={}ms, check={}ms, cooldown={}s).",
@@ -45,6 +87,10 @@ namespace FreezeLogger::Watchdog {
                     state, now, main, render,
                     cfg.threshold_ms, cfg.snapshot_cooldown_s,
                     /*a_canTrip=*/fgOurs);
+
+                MaybeLogEarlyWarning(earlyWarn, now,
+                                     step.main_age_ms, step.render_age_ms,
+                                     cfg.threshold_ms, fgOurs);
 
                 switch (step.action) {
                 case Action::EmitSnapshot:

@@ -1,0 +1,60 @@
+# FreezeLogger TEST-VARIANT configuration.
+#
+# This file ships with the test RAR (windows-x64-test preset) and is
+# intentionally aggressive so the synthetic-stall triggers in
+# DebugTriggers.cpp (VK_PAUSE hotkey, FL_TEST_FREEZE_AFTER_S env var)
+# reliably produce a freeze report.
+#
+# Do NOT use this on a real playthrough: a 3 s threshold will trip on
+# legitimate cell transitions and save loads. The production RAR ships
+# the regular dist/FreezeLogger.toml with threshold_ms = 30000.
+
+[watchdog]
+# 3 s: the VK_PAUSE hotkey induces a 10 s stall, which gives us 7 s of
+# "stalled" time after the watchdog trips. Plenty of margin to capture
+# the snapshot.
+threshold_ms        = 3000
+check_interval_ms   = 500
+snapshot_cooldown_s = 30
+annotate_on_resolve = true
+
+
+[snapshot]
+include_threads       = true
+include_modules       = true
+include_papyrus       = true
+include_animgraph     = true
+include_engine        = true
+include_system        = true
+include_ringbuffer    = true
+max_threads           = 1024
+max_frames_per_stack  = 120
+
+
+[ringbuffer]
+papyrus_lines = 100
+skse_events   = 50
+
+
+[minidump]
+# ON in test config: with the synthetic trigger we *want* a .dmp to
+# confirm the post-mortem path works end-to-end.
+enabled       = true
+flags         = "normal+threadinfo+indirect"
+retain_last_n = 5
+
+
+[output]
+directory           = ""
+keep_last_n_reports = 50
+
+
+[symbols]
+# Still off by default even in test config — first run will hit the MS
+# server otherwise and stretch the snapshot capture by several seconds.
+use_ms_symbol_server = false
+cache_directory      = ""
+
+
+[logging]
+level = "debug"

@@ -1,0 +1,5 @@
+Exception in thread "main" ghidra.util.exception.InvalidInputException: D:\SPIELE\nolvus\Instances\Nolvus is not a valid directory or file.
+	at ghidra.app.util.headless.AnalyzeHeadless.parseOptions(AnalyzeHeadless.java:300)
+	at ghidra.app.util.headless.AnalyzeHeadless.launch(AnalyzeHeadless.java:187)
+	at ghidra.GhidraLauncher.launch(GhidraLauncher.java:81)
+	at ghidra.Ghidra.main(Ghidra.java:54)

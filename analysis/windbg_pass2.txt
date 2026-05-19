@@ -1,0 +1,711 @@
+﻿
+************* Path validation summary **************
+Response                         Time (ms)     Location
+OK                                             E:\SHARED\_STAEUBER\MyFiles\Documents\My Games\Skyrim Special Edition\SKSE\FreezeLogger\symbols
+Deferred                                       srv*E:\SHARED\_STAEUBER\MyFiles\Documents\My Games\Skyrim Special Edition\SKSE\FreezeLogger\symbols*https://msdl.microsoft.com/download/symbols
+
+************* Preparing the environment for Debugger Extensions Gallery repositories **************
+   ExtensionRepository : Implicit
+   UseExperimentalFeatureForNugetShare : true
+   AllowNugetExeUpdate : true
+   NonInteractiveNuget : true
+   AllowNugetMSCredentialProviderInstall : true
+   AllowParallelInitializationOfLocalRepositories : true
+   EnableRedirectToChakraJsProvider : false
+
+   -- Configuring repositories
+      ----> Repository : LocalInstalled, Enabled: true
+      ----> Repository : UserExtensions, Enabled: true
+
+>>>>>>>>>>>>> Preparing the environment for Debugger Extensions Gallery repositories completed, duration 0.000 seconds
+
+************* Waiting for Debugger Extensions Gallery to Initialize **************
+
+>>>>>>>>>>>>> Waiting for Debugger Extensions Gallery to Initialize completed, duration 0.016 seconds
+   ----> Repository : UserExtensions, Enabled: true, Packages count: 0
+   ----> Repository : LocalInstalled, Enabled: true, Packages count: 46
+
+Microsoft (R) Windows Debugger Version 10.0.29547.1002 AMD64
+Copyright (c) Microsoft Corporation. All rights reserved.
+
+
+Loading Dump File [E:\SHARED\_STAEUBER\MyFiles\Documents\My Games\Skyrim Special Edition\SKSE\FreezeLogger\minidumps\freeze_2026-05-17_023447.dmp]
+User Mini Dump File: Only registers, stack and portions of memory are available
+
+
+************* Path validation summary **************
+Response                         Time (ms)     Location
+OK                                             E:\SHARED\_STAEUBER\MyFiles\Documents\My Games\Skyrim Special Edition\SKSE\FreezeLogger\symbols
+Deferred                                       srv*E:\SHARED\_STAEUBER\MyFiles\Documents\My Games\Skyrim Special Edition\SKSE\FreezeLogger\symbols*https://msdl.microsoft.com/download/symbols
+Symbol search path is: E:\SHARED\_STAEUBER\MyFiles\Documents\My Games\Skyrim Special Edition\SKSE\FreezeLogger\symbols;srv*E:\SHARED\_STAEUBER\MyFiles\Documents\My Games\Skyrim Special Edition\SKSE\FreezeLogger\symbols*https://msdl.microsoft.com/download/symbols
+Executable search path is: 
+Windows 10 Version 26200 MP (32 procs) Free x64
+Product: WinNt, suite: SingleUserTS
+Edition build lab: 26100.1.amd64fre.ge_release.240331-1435
+Debug session time: Sun May 17 02:34:48.000 2026 (UTC + 2:00)
+System Uptime: 1 days 9:58:40.161
+Process Uptime: 0 days 1:12:14.000
+................................................................
+................................................................
+................................................................
+................................................................
+................................................................
+....................
+
++------------------------------------------------------------------------+
+| This target supports Hardware-enforced Stack Protection. A HW based    |
+| "Shadow Stack" may be available to assist in debugging and analysis.   |
+| See aka.ms/userhsp for more info.                                      |
+|                                                                        |
+| dps @ssp                                                               |
+|                                                                        |
++------------------------------------------------------------------------+
+
+For analysis of this file, run !analyze -v
+ntdll!NtWaitForSingleObject+0x14:
+00007fff`7a2e1d24 c3              ret
+0:000> .symopt+0x40
+Symbol options are 0xB0377:
+  0x00000001 - SYMOPT_CASE_INSENSITIVE
+  0x00000002 - SYMOPT_UNDNAME
+  0x00000004 - SYMOPT_DEFERRED_LOADS
+  0x00000010 - SYMOPT_LOAD_LINES
+  0x00000020 - SYMOPT_OMAP_FIND_NEAREST
+  0x00000040 - SYMOPT_LOAD_ANYTHING
+  0x00000100 - SYMOPT_NO_UNQUALIFIED_LOADS
+  0x00000200 - SYMOPT_FAIL_CRITICAL_ERRORS
+  0x00010000 - SYMOPT_AUTO_PUBLICS
+  0x00020000 - SYMOPT_NO_IMAGE_SEARCH
+  0x00080000 - SYMOPT_NO_PROMPTS
+0:000> .reload /f
+.*** WARNING: Unable to verify checksum for SkyrimSE.exe
+.............................*** WARNING: Unable to verify checksum for d3dx9_42.dll
+.......*** WARNING: Unable to verify checksum for binkw64.dll
+...........*** WARNING: Unable to verify checksum for binkw64_.dll
+.*** WARNING: Unable to verify checksum for skse64_steam_loader.dll
+.....*** WARNING: Unable to verify checksum for usvfs_x64.dll
+..........
+....*** WARNING: Unable to verify checksum for EngineFixes.dll
+.*** WARNING: Unable to verify checksum for FPSFixPlugin.dll
+.*** WARNING: Unable to verify checksum for skse64_1_5_97.dll
+
+
+Press ctrl-c (cdb, kd, ntsd) or ctrl-break (windbg) to abort symbol loads that take too long.
+Run !sym noisy before .reload to track down problems loading symbols.
+
+.*** WARNING: Unable to verify checksum for A0D789patch.dll
+.*** WARNING: Unable to verify checksum for ACloserLookSSE.dll
+.*** WARNING: Unable to verify checksum for ActorLimitFix.dll
+.*** WARNING: Unable to verify checksum for AHZmoreHUDInventory.dll
+.*** WARNING: Unable to verify checksum for AHZmoreHUDPlugin.dll
+.*** WARNING: Unable to verify checksum for AnimationMotionRevolution.dll
+.*** WARNING: Unable to verify checksum for AnimationQueueFix.dll
+.*** WARNING: Unable to verify checksum for ArcheryLocationalDamage.dll
+.*** WARNING: Unable to verify checksum for AuroraFix.dll
+"AuroraFix": Error (0xc00cee3d): Text/xmldecl not at the beginning of input (line 4 (@ 3))
+.*** WARNING: Unable to verify checksum for AutoInputSwitch.dll
+.*** WARNING: Unable to verify checksum for AutoParallax.dll
+.*** WARNING: Unable to verify checksum for BackportedESLSupport.dll
+.*** WARNING: Unable to verify checksum for BehaviorDataInjector.dll
+.*** WARNING: Unable to verify checksum for BetterJumpingSE.dll
+.*** WARNING: Unable to verify checksum for BetterThirdPersonSelection.dll
+...*** WARNING: Unable to verify checksum for BugFixesSSE.dll
+.*** WARNING: Unable to verify checksum for CameraShake.dll
+.*** WARNING: Unable to verify checksum for CastingBar.dll
+.*** WARNING: Unable to verify checksum for cbp.dll
+.*** WARNING: Unable to verify checksum for CCExtender.dll
+.*** WARNING: Unable to verify checksum for CombatMusicFix.dll
+.*** WARNING: Unable to verify checksum for CombatPathingRevolution.dll
+.*** WARNING: Unable to verify checksum for CompassNavigationOverhaul.dll
+.*** WARNING: Unable to verify checksum for ComprehensiveAttackRatePatch.dll
+..*** WARNING: Unable to verify checksum for ContextualCrosshair.dll
+.*** WARNING: Unable to verify checksum for ContinueSound.dll
+.*** WARNING: Unable to verify checksum for CoreImpactFramework.dll
+..*** WARNING: Unable to verify checksum for CraftingCategories.dll
+.*** WARNING: Unable to verify checksum for CrashLogger.dll
+...*** WARNING: Unable to verify checksum for CustomSkills.dll
+.*** WARNING: Unable to verify checksum for DescriptionFramework.dll
+.*** WARNING: Unable to verify checksum for DisableFollowerCollision.dll
+.*** WARNING: Unable to verify checksum for diskCacheEnabler.dll
+.*** WARNING: Unable to verify checksum for DismemberingFramework.dll
+"DismemberingFramework": Error (0xc00cee3d): Text/xmldecl not at the beginning of input (line 4 (@ 3))
+..*** WARNING: Unable to verify checksum for dmenu.dll
+.*** WARNING: Unable to verify checksum for DontEatSpellTomes.dll
+.*** WARNING: Unable to verify checksum for doticu_skypal.dll
+.*** WARNING: Unable to verify checksum for dTryHitStop.dll
+.*** WARNING: Unable to verify checksum for DtryKeyUtil.dll
+..*** WARNING: Unable to verify checksum for DynamicArmorVariants.dll
+.*** WARNING: Unable to verify checksum for DynamicCollisionAdjustment.dll
+.*** WARNING: Unable to verify checksum for DynDOLOD.DLL
+.*** WARNING: Unable to verify checksum for ENBAntiAliasing.dll
+...*** WARNING: Unable to verify checksum for ENBHelperSE.dll
+.*** WARNING: Unable to verify checksum for ENBInputDisabler.dll
+.*** WARNING: Unable to verify checksum for EquipEnchantmentFix.dll
+.*** WARNING: Unable to verify checksum for EquipmentDurabilitySystemNG.dll
+.
+*** WARNING: Unable to verify checksum for EVLaS.dll
+.*** WARNING: Unable to verify checksum for Experience.dll
+.*** WARNING: Unable to verify checksum for ExtendedHotkeySystem.dll
+.*** WARNING: Unable to verify checksum for fiss.dll
+.*** WARNING: Unable to verify checksum for FixNotesForSkyUI.dll
+.*** WARNING: Unable to verify checksum for FlatMapMarkersSSE.dll
+.*** WARNING: Unable to verify checksum for FloatingDamageV2.dll
+.*** WARNING: Unable to verify checksum for FormListManipulator.dll
+.*** WARNING: Unable to verify checksum for FreezeLogger.dll
+.*** WARNING: Unable to verify checksum for Fuz Ro D'oh.dll
+.*** WARNING: Unable to verify checksum for gotobed.dll
+.*** WARNING: Unable to verify checksum for GrassCacheHelperNG.dll
+.*** WARNING: Unable to verify checksum for HDLocalMap.dll
+.*** WARNING: Unable to verify checksum for hdtsmp64.dll
+..*** WARNING: Unable to verify checksum for HelpExtender.dll
+.*** WARNING: Unable to verify checksum for HonedMetal.dll
+.*** WARNING: Unable to verify checksum for HookDamage.dll
+.*** WARNING: Unable to verify checksum for HorseStaminaHUD.dll
+.*** WARNING: Unable to verify checksum for ImmersiveEquipmentDisplays.dll
+.*** WARNING: Unable to verify checksum for ImWalkinHere.dll
+.*** WARNING: Unable to verify checksum for InfinityUI.dll
+.*** WARNING: Unable to verify checksum for InsertAttackData.dll
+..*** WARNING: Unable to verify checksum for InventoryInjector.dll
+..*** WARNING: Unable to verify checksum for J42_ARR_plugin.dll
+.*** WARNING: Unable to verify checksum for JContainers64.dll
+..*** WARNING: Unable to verify checksum for KiLoaderSatelliteSKSE.dll
+.*** WARNING: Unable to verify checksum for KiLoader.dll
+.Unable to load image D:\SPIELE\nolvus\Instances\Nolvus Awakening\STOCK GAME\data\KiLoader\Dependencies\KiHalloc.dll, Win32 error 0n2
+*** WARNING: Unable to verify timestamp for KiHalloc.dll
+.*** WARNING: Unable to verify checksum for KiENBExtender.dll
+.*** WARNING: Unable to verify checksum for large_sector_fix.dll
+.*** WARNING: Unable to verify checksum for LocalMapUpgrade.dll
+.*** WARNING: Unable to verify checksum for LocationalEncounterZones.dll
+.*** WARNING: Unable to verify checksum for loki_DynamicAnimationCasting.dll
+.*** WARNING: Unable to verify checksum for MainMenuCustomizer.dll
+.*** WARNING: Unable to verify checksum for MannequinFix.dll
+.*** WARNING: Unable to verify checksum for MaxsuAIProcessFix.dll
+"MaxsuAIProcessFix": Error (0xc00cee3d): Text/xmldecl not at the beginning of input (line 4 (@ 3))
+.*** WARNING: Unable to verify checksum for MaxsuCombatEscape.dll
+.*** WARNING: Unable to verify checksum for MaxsuDetectionMeter.dll
+.*** WARNING: Unable to verify checksum for MaxsuIFrame.dll
+.*** WARNING: Unable to verify checksum for MCMHelper.dll
+.*** WARNING: Unable to verify checksum for MCO.dll
+.*** WARNING: Unable to verify checksum for MenuMaid2.dll
+.*** WARNING: Unable to verify checksum for mfgfix.dll
+.*** WARNING: Unable to verify checksum for ModernStaggerLock.dll
+.*** WARNING: Unable to verify checksum for MoreInformativeConsole.dll
+.*** WARNING: Unable to verify checksum for MuImpactFramework.dll
+.*** WARNING: Unable to verify checksum for NextGenDecapitations.dll
+.*** WARNING: Unable to verify checksum for NoFurnitureCamera.dll
+.*** WARNING: Unable to verify checksum for NPCsUsePotions.dll
+..*** WARNING: Unable to verify checksum for OpenAnimationReplacer-DetectionPlugin.dll
+.*** WARNING: Unable to verify checksum for OpenAnimationReplacer-DialoguePlugin.dll
+.*** WARNING: Unable to verify checksum for OpenAnimationReplacer-IEDConditionExtensions.dll
+.*** WARNING: Unable to verify checksum for OpenAnimationReplacer.dll
+.*** WARNING: Unable to verify checksum for OverlayFix.dll
+.*** WARNING: Unable to verify checksum for oxygenMeter2.dll
+.*** WARNING: Unable to verify checksum for PairedAnimationImprovements.dll
+..*** WARNING: Unable to verify checksum for PapyrusTweaks.dll
+.*** WARNING: Unable to verify checksum for PapyrusUtil.dll
+.
+*** WARNING: Unable to verify checksum for Paraglider.dll
+..*** WARNING: Unable to verify checksum for PayloadInterpreter.dll
+.*** WARNING: Unable to verify checksum for PlayerRotation.dll
+.*** WARNING: Unable to verify checksum for po3_AnimObjectSwapper.dll
+.*** WARNING: Unable to verify checksum for po3_BaseObjectSwapper.dll
+.*** WARNING: Unable to verify checksum for po3_ConsolePlusPlus.dll
+.*** WARNING: Unable to verify checksum for po3_DialogueHistory.dll
+..*** WARNING: Unable to verify checksum for po3_ENBLightForEffectShaders.dll
+.*** WARNING: Unable to verify checksum for po3_KeywordItemDistributor.dll
+.*** WARNING: Unable to verify checksum for po3_LockVariations.dll
+.*** WARNING: Unable to verify checksum for po3_PapyrusExtender.dll
+.*** WARNING: Unable to verify checksum for po3_SeasonsOfSkyrim.dll
+.*** WARNING: Unable to verify checksum for po3_SimpleOffenceSuppression.dll
+.*** WARNING: Unable to verify checksum for po3_SpellPerkItemDistributor.dll
+.*** WARNING: Unable to verify checksum for po3_SplashesOfSkyrim.dll
+.*** WARNING: Unable to verify checksum for po3_SplashesOfStorms.dll
+.*** WARNING: Unable to verify checksum for po3_Tweaks.dll
+.*** WARNING: Unable to verify checksum for po3_VampiresCastNoShadow.dll
+.*** WARNING: Unable to verify checksum for po3_WashThatBloodOff.dll
+.*** WARNING: Unable to verify checksum for Precision.dll
+.*** WARNING: Unable to verify checksum for QuickLootIE.dll
+.*** WARNING: Unable to verify checksum for RandomMainMenuMusic.dll
+"RandomMainMenuMusic": Error (0xc00cee3d): Text/xmldecl not at the beginning of input (line 4 (@ 3))
+.*** WARNING: Unable to verify checksum for RecursionFPSFix.dll
+.*** WARNING: Unable to verify checksum for RoguesGallery.dll
+.*** WARNING: Unable to verify checksum for SanguineSymphony.dll
+.*** WARNING: Unable to verify checksum for SAS SE.dll
+..*** WARNING: Unable to verify checksum for SCAR.dll
+.*** WARNING: Unable to verify checksum for ScrambledBugs.dll
+.*** WARNING: Unable to verify checksum for ShowPlayerInMenus.dll
+.*** WARNING: Unable to verify checksum for SimpleDualSheath.dll
+.*** WARNING: Unable to verify checksum for SimplyKnock.dll
+.*** WARNING: Unable to verify checksum for skee64-memleak-patch.dll
+.*** WARNING: Unable to verify checksum for skee64.dll
+.*** WARNING: Unable to verify checksum for SkyParkourNG.dll
+.*** WARNING: Unable to verify checksum for SkyPatcher.dll
+.*** WARNING: Unable to verify checksum for SkyReflectionFix.dll
+.*** WARNING: Unable to verify checksum for skyrim-freeze-fix.dll
+.*** WARNING: Unable to verify checksum for SkyrimSMPCrashGuards.dll
+.*** WARNING: Unable to verify checksum for SkyrimUncapper.dll
+.*** WARNING: Unable to verify checksum for SmoothCam.dll
+.*** WARNING: Unable to verify checksum for SoundRecordDistributor.dll
+"SoundRecordDistributor": Error (0xc00cee3d): Text/xmldecl not at the beginning of input (line 4 (@ 3))
+.*** WARNING: Unable to verify checksum for SSEDisplayTweaks.dll
+.*** WARNING: Unable to verify checksum for SSMT_Fix.dll
+.*** WARNING: Unable to verify checksum for StaggerEffectFix.dll
+.*** WARNING: Unable to verify checksum for StayAtSystemPageSE.dll
+.*** WARNING: Unable to verify checksum for STB_ActiveEffects.dll
+.*** WARNING: Unable to verify checksum for STB_Widgets.dll
+.*** WARNING: Unable to verify checksum for StormLightning.dll
+.*** WARNING: Unable to verify checksum for SurvivalControlPanel.dll
+.*** WARNING: Unable to verify checksum for TimeFormatChanger.dll
+.*** WARNING: Unable to verify checksum for TK_Dodge_RE.dll
+.*** WARNING: Unable to verify checksum for TrueDirectionalMovement.dll
+.*** WARNING: Unable to verify checksum for TrueHUD.dll
+.*** WARNING: Unable to verify checksum for TweenMenuOverhaul.dll
+.*** WARNING: Unable to verify checksum for UAPNG.dll
+.*** WARNING: Unable to verify checksum for UltimateDragons64.dll
+.*** WARNING: Unable to verify checksum for UND.dll
+"UND": Error (0xc00cee3d): Text/xmldecl not at the beginning of input (line 4 (@ 3))
+.*** WARNING: Unable to verify checksum for UnequipQuiverNG.dll
+.*** WARNING: Unable to verify checksum for valhallaCombat.dll
+.*** WARNING: Unable to verify checksum for Vibrant weapons.dll
+.*** WARNING: Unable to verify checksum for WadeInWater.dll
+"WadeInWater": Error (0xc00cee3d): Text/xmldecl not at the beginning of input (line 4 (@ 3))
+.
+*** WARNING: Unable to verify checksum for wheeler.dll
+.*** WARNING: Unable to verify checksum for WhoseQuestIsItAnyway.dll
+............................*** WARNING: Unable to verify checksum for KiLoaderSatelliteENB.dllplugin
+...................................
+....................
+
+************* Symbol Loading Error Summary **************
+Module name            Error
+SkyrimSE               The system cannot find the file specified
+d3dx9_42               The system cannot find the file specified
+steam_api64            The system cannot find the file specified
+d3d11                  The system cannot find the file specified
+binkw64                The system cannot find the file specified
+dxgi                   The system cannot find the file specified
+binkw64_               The system cannot find the file specified
+skse64_steam_loader    The system cannot find the file specified
+usvfs_x64              The system cannot find the file specified
+steamclient64          The system cannot find the file specified
+tier0_s64              The system cannot find the file specified
+vstdlib_s64            The system cannot find the file specified
+FPSFixPlugin           The system cannot find the file specified
+skse64_1_5_97          The system cannot find the file specified
+A0D789patch            The system cannot find the file specified
+ACloserLookSSE         The system cannot find the file specified
+AHZmoreHUDInventory    The system cannot find the file specified
+AHZmoreHUDPlugin       The system cannot find the file specified
+AnimationMotionRevolut The system cannot find the file specified
+AnimationQueueFix      The system cannot find the file specified
+ArcheryLocationalDamag The system cannot find the file specified
+AutoInputSwitch        The system cannot find the file specified
+BackportedESLSupport   The system cannot find the file specified
+BehaviorDataInjector   The system cannot find the file specified
+BetterJumpingSE        The system cannot find the file specified
+BetterThirdPersonSelec The system cannot find the file specified
+CCExtender             The system cannot find the file specified
+CombatMusicFix         The system cannot find the file specified
+CombatPathingRevolutio The system cannot find the file specified
+CompassNavigationOverh The system cannot find the file specified
+ConsoleUtilSSE         The system cannot find the file specified
+ContinueSound          The system cannot find the file specified
+DisableFollowerCollisi The system cannot find the file specified
+diskCacheEnabler       The system cannot find the file specified
+DKAF                   The system cannot find the file specified
+dmenu                  The system cannot find the file specified
+DontEatSpellTomes      The system cannot find the file specified
+doticu_skypal          The system cannot find the file specified
+dTryHitStop            The system cannot find the file specified
+DtryKeyUtil            The system cannot find the file specified
+DualWieldParryingSKSE  The system cannot find the file specified
+DynamicCollisionAdjust The system cannot find the file specified
+sl.interposer          The system cannot find the file specified
+ENBHelperSE            The system cannot find the file specified
+EquipEnchantmentFix    The system cannot find the file specified
+EquipmentDurabilitySys The system cannot find the file specified
+EVLaS                  The system cannot find the file specified
+ExtendedHotkeySystem   The system cannot find the file specified
+fiss                   The system cannot find the file specified
+FixNotesForSkyUI       The system cannot find the file specified
+FlatMapMarkersSSE      The system cannot find the file specified
+FloatingDamageV2       The system cannot find the file specified
+FormListManipulator    The system cannot find the file specified
+Fuz Ro D'oh            The system cannot find the file specified
+gotobed                The system cannot find the file specified
+HelpExtender           The system cannot find the file specified
+HonedMetal             The system cannot find the file specified
+HookDamage             The system cannot find the file specified
+HorseStaminaHUD        The system cannot find the file specified
+ImmersiveEquipmentDisp The system cannot find the file specified
+ImWalkinHere           The system cannot find the file specified
+InfinityUI             The system cannot find the file specified
+InsertAttackData       The system cannot find the file specified
+InstantlySkipDialogueN The system cannot find the file specified
+IWantWidgetsNative     The system cannot find the file specified
+J42_ARR_plugin         The system cannot find the file specified
+JContainers64          The system cannot find the file specified
+keyholepeekmenu        The system cannot find the file specified
+KiLoaderSatelliteSKSE  The system cannot find the file specified
+KiLoader               The system cannot find the file specified
+KiHalloc               The system cannot find the file specified
+KiENBExtender          The system cannot find the file specified
+large_sector_fix       The system cannot find the file specified
+LocalMapUpgrade        The system cannot find the file specified
+loki_DynamicAnimationC The system cannot find the file specified
+MaxsuCombatEscape      The system cannot find the file specified
+MaxsuDetectionMeter    The system cannot find the file specified
+MaxsuIFrame            The system cannot find the file specified
+mfgfix                 The system cannot find the file specified
+MoreInformativeConsole The system cannot find the file specified
+NoFurnitureCamera      The system cannot find the file specified
+OneClickPowerAttack    The system cannot find the file specified
+OpenAnimationReplacer- The system cannot find the file specified
+OpenAnimationReplacer- The system cannot find the file specified
+PAPER                  The system cannot find the file specified
+PapyrusUtil            The system cannot find the file specified
+Paraglider             The system cannot find the file specified
+ParryingRPG            The system cannot find the file specified
+PayloadInterpreter     The system cannot find the file specified
+PlayerRotation         The system cannot find the file specified
+Precision              The system cannot find the file specified
+RecursionFPSFix        The system cannot find the file specified
+RoguesGallery          The system cannot find the file specified
+SAS SE                 The system cannot find the file specified
+ScaleformTranslationPP The system cannot find the file specified
+SCAR                   The system cannot find the file specified
+SimpleDualSheath       The system cannot find the file specified
+SimplyKnock            The system cannot find the file specified
+skee64-memleak-patch   The system cannot find the file specified
+skee64                 The system cannot find the file specified
+SkyPatcher             The system cannot find the file specified
+SkyrimUncapper         The system cannot find the file specified
+SmoothCam              The system cannot find the file specified
+SSEDisplayTweaks       The system cannot find the file specified
+SSMT_Fix               The system cannot find the file specified
+StayAtSystemPageSE     The system cannot find the file specified
+STB_ActiveEffects      The system cannot find the file specified
+STB_Widgets            The system cannot find the file specified
+StormLightning         The system cannot find the file specified
+SurvivalControlPanel   The system cannot find the file specified
+TimeFormatChanger      The system cannot find the file specified
+TK_Dodge_RE            The system cannot find the file specified
+TrueDirectionalMovemen The system cannot find the file specified
+TrueHUD                The system cannot find the file specified
+TweenMenuOverhaul      The system cannot find the file specified
+UltimateDragons64      The system cannot find the file specified
+UnequipQuiverNG        The system cannot find the file specified
+valhallaCombat         The system cannot find the file specified
+Vibrant weapons        The system cannot find the file specified
+WhoseQuestIsItAnyway   The system cannot find the file specified
+gameoverlayrenderer64  The system cannot find the file specified
+sl.common              The system cannot find the file specified
+nvapi64                The system cannot find the file specified
+sl.dlss                The system cannot find the file specified
+_nvngx                 The system cannot find the file specified
+nvngx_dlss             The system cannot find the file specified
+KiLoaderSatelliteENB   The system cannot find the file specified
+nvldumdx               The system cannot find the file specified
+nvgpucomp64            The system cannot find the file specified
+NvMessageBus           The system cannot find the file specified
+NvCamera64             The system cannot find the file specified
+NvMemMapStoragex       The system cannot find the file specified
+nvwgf2umx              The system cannot find the file specified
+nvspcap64              The system cannot find the file specified
+nvppex                 The system cannot find the file specified
+d3dcompiler_47_64      The system cannot find the file specified
+nvcuda64               The system cannot find the file specified
+nvdxgdmal64            The system cannot find the file specified
+NvTelemetryAPI64       The system cannot find the file specified
+NvTelemetryBridge64    The system cannot find the file specified
+
+You can troubleshoot most symbol related issues by turning on symbol loading diagnostics (!sym noisy) and repeating the command that caused symbols to be loaded.
+You should also verify that your symbol search path (.sympath) is correct.
+0:000> .lines -e
+Line number information will be loaded
+0:000> .echo ===MAIN_REGS===
+===MAIN_REGS===
+0:000> ~0 r
+rax=0000000000000004 rbx=00000000000028b0 rcx=00000000000028b0
+rdx=0000000000000000 rsi=00000000ffffffff rdi=0000000000000000
+rip=00007fff7a2e1d24 rsp=000000068c16f518 rbp=0000000000000000
+ r8=0000000000000000  r9=00007ffe868897a0 r10=00000000000028b0
+r11=00000000000028b0 r12=0000000000000000 r13=0000000000000000
+r14=0000000000000000 r15=0000000000000000
+iopl=0         nv up ei pl zr na pe nc
+cs=0033  ss=002b  ds=002b  es=002b  fs=0053  gs=002b             efl=00000246
+ntdll!NtWaitForSingleObject+0x14:
+00007fff`7a2e1d24 c3              ret
+0:000> .echo ===MAIN_KN===
+===MAIN_KN===
+0:000> ~0 kn 30
+ # Child-SP          RetAddr               Call Site
+00 00000006`8c16f518 00007fff`77b2e40f     ntdll!NtWaitForSingleObject+0x14
+01 00000006`8c16f520 00007ff7`b52865ff     KERNELBASE!WaitForSingleObjectEx+0xaf
+02 00000006`8c16f5c0 00007ff7`b52c35dd     SkyrimSE+0x5765ff
+03 00000006`8c16f5f0 00007ffe`d2a42dfe     SkyrimSE+0x5b35dd
+04 (Inline Function) --------`--------     hdtsmp64!REL::invoke+0x6 [D:\a\hdtSMP64\hdtSMP64\extern\CommonLibSSE\include\REL\Relocation.h @ 186]
+05 (Inline Function) --------`--------     hdtsmp64!REL::Relocation<void (__cdecl*)(RE::Main *)>::operator()+0x6 [D:\a\hdtSMP64\hdtSMP64\extern\CommonLibSSE\include\REL\Relocation.h @ 685]
+06 00000006`8c16f630 00007ff7`b52bf4f4     hdtsmp64!Hooks::MainHooks::Update+0x1e [D:\a\hdtSMP64\hdtSMP64\src\Hooks.cpp @ 206]
+07 00000006`8c16f670 00007ff7`b52bcc05     SkyrimSE+0x5af4f4
+08 00000006`8c16f700 00007ff7`b605b17a     SkyrimSE+0x5acc05
+09 00000006`8c16f730 00007fff`784ae957     SkyrimSE+0x134b17a
+0a 00000006`8c16f770 00007fff`7a18427c     kernel32!BaseThreadInitThunk+0x17
+0b 00000006`8c16f7a0 00000000`00000000     ntdll!RtlUserThreadStart+0x2c
+0:000> .echo ===MAIN_DV===
+===MAIN_DV===
+0:000> ~0 dv /v
+          ^ Syntax error in '~0 dv /v'
+0:000> .echo ===CALL_SITE_5b35dd===
+===CALL_SITE_5b35dd===
+0:000> .echo bytes around the Main::Update call site that calls the lock primitive:
+bytes around the Main::Update call site that calls the lock primitive:
+0:000> u SkyrimSE+0x5b35d0 L20
+SkyrimSE+0x5b35d0:
+00007ff7`b52c35d0 58              pop     rax
+00007ff7`b52c35d1 c10710          rol     dword ptr [rdi],10h
+00007ff7`b52c35d4 5f              pop     rdi
+00007ff7`b52c35d5 c3              ret
+00007ff7`b52c35d6 16              ???
+00007ff7`b52c35d7 d5              ???
+00007ff7`b52c35d8 f1              ???
+00007ff7`b52c35d9 122d9c83fc4e    adc     ch,byte ptr [00007ff8`0428b97b]
+00007ff7`b52c35df 3ed7            xlat    byte ptr ds:[rbx]
+00007ff7`b52c35e1 9b              wait
+00007ff7`b52c35e2 d0bc4f7eefe42c  sar     byte ptr [rdi+rcx*2+2CE4EF7Eh],1
+00007ff7`b52c35e9 d9f8            fprem
+00007ff7`b52c35eb 835e499a        sbb     dword ptr [rsi+49h],0FFFFFF9Ah
+00007ff7`b52c35ef d3af2f7c7ac7    shr     dword ptr [rdi-388583D1h],cl
+00007ff7`b52c35f5 4193            xchg    eax,r11d
+00007ff7`b52c35f7 90              nop
+00007ff7`b52c35f8 fd              std
+00007ff7`b52c35f9 ab              stos    dword ptr [rdi]
+00007ff7`b52c35fa 3108            xor     dword ptr [rax],ecx
+00007ff7`b52c35fc b475            mov     ah,75h
+00007ff7`b52c35fe 21ff            and     edi,edi
+00007ff7`b52c3600 56              push    rsi
+00007ff7`b52c3601 e158            loope   SkyrimSE+0x5b365b (00007ff7`b52c365b)
+00007ff7`b52c3603 700f            jo      SkyrimSE+0x5b3614 (00007ff7`b52c3614)
+00007ff7`b52c3605 49e2d0          loop    SkyrimSE+0x5b35d8 (00007ff7`b52c35d8)
+00007ff7`b52c3608 98              cwde
+00007ff7`b52c3609 a5              movs    dword ptr [rdi],dword ptr [rsi]
+00007ff7`b52c360a 2002            and     byte ptr [rdx],al
+00007ff7`b52c360c 4dd34c5b3d      ror     qword ptr [r11+rbx*2+3Dh],cl
+00007ff7`b52c3611 74d7            je      SkyrimSE+0x5b35ea (00007ff7`b52c35ea)
+00007ff7`b52c3613 6a85            push    0FFFFFFFFFFFFFF85h
+00007ff7`b52c3615 6c              ins     byte ptr [rdi],dx
+0:000> .echo ===CALL_SITE_5765ff===
+===CALL_SITE_5765ff===
+0:000> .echo bytes around the lock primitive entry / wait:
+bytes around the lock primitive entry / wait:
+0:000> u SkyrimSE+0x5765d0 L20
+SkyrimSE+0x5765d0:
+00007ff7`b52865d0 13ee            adc     ebp,esi
+00007ff7`b52865d2 19d3            sbb     ebx,edx
+00007ff7`b52865d4 84eb            test    bl,ch
+00007ff7`b52865d6 126810          adc     ch,byte ptr [rax+10h]
+00007ff7`b52865d9 aa              stos    byte ptr [rdi]
+00007ff7`b52865da 0042a0          add     byte ptr [rdx-60h],al
+00007ff7`b52865dd 8d79a9          lea     edi,[rcx-57h]
+00007ff7`b52865e0 fc              cld
+00007ff7`b52865e1 54              push    rsp
+00007ff7`b52865e2 0b9b3172b6ba    or      ebx,dword ptr [rbx-45498DCFh]
+00007ff7`b52865e8 27              ???
+00007ff7`b52865e9 90              nop
+00007ff7`b52865ea c3              ret
+00007ff7`b52865eb 53              push    rbx
+00007ff7`b52865ec 9a              ???
+00007ff7`b52865ed 2d0377b474      sub     eax,74B47703h
+00007ff7`b52865f2 e580            in      eax,80h
+00007ff7`b52865f4 e64e            out     4Eh,al
+00007ff7`b52865f6 200d0241f0af    and     byte ptr [00007ff7`6518a6fe],cl
+00007ff7`b52865fc f08e819be4ae1b  lock mov es,word ptr [rcx+1BAEE49Bh]
+00007ff7`b5286603 d059e7          rcr     byte ptr [rcx-19h],1
+00007ff7`b5286606 aa              stos    byte ptr [rdi]
+00007ff7`b5286607 2e7e07          hnt jle SkyrimSE+0x576611 (00007ff7`b5286611)
+00007ff7`b528660a a23025700bdd63cc4e mov   byte ptr [4ECC63DD0B702530h],al
+00007ff7`b5286613 cb              retf
+00007ff7`b5286614 aa              stos    byte ptr [rdi]
+00007ff7`b5286615 4c              ???
+00007ff7`b5286616 37              ???
+00007ff7`b5286617 1f              ???
+00007ff7`b5286618 e21a            loop    SkyrimSE+0x576634 (00007ff7`b5286634)
+00007ff7`b528661a 07              ???
+00007ff7`b528661b 3442            xor     al,42h
+0:000> .echo ===RENDER_REGS===
+===RENDER_REGS===
+0:000> ~~[1df4.6bd4] r
+Syntax error at '1df4.6bd4] r'
+0:000> .echo ===RENDER_KN===
+===RENDER_KN===
+0:000> ~~[1df4.6bd4] kn 30
+Syntax error at '1df4.6bd4] kn 30'
+0:000> .echo ===WORKER_TID7060_REGS===
+===WORKER_TID7060_REGS===
+0:000> ~~[1df4.7060] r
+Syntax error at '1df4.7060] r'
+0:000> .echo ===WORKER_TID7060_KN===
+===WORKER_TID7060_KN===
+0:000> ~~[1df4.7060] kn 30
+Syntax error at '1df4.7060] kn 30'
+0:000> .echo ===WORKER_TID251c_REGS===
+===WORKER_TID251c_REGS===
+0:000> ~~[1df4.251c] r
+Syntax error at '1df4.251c] r'
+0:000> .echo ===WORKER_TID251c_KN===
+===WORKER_TID251c_KN===
+0:000> ~~[1df4.251c] kn 30
+Syntax error at '1df4.251c] kn 30'
+0:000> .echo ===CALL_SITE_6d468a===
+===CALL_SITE_6d468a===
+0:000> .echo bytes for the JOB BODY (4 workers' common job):
+bytes for the JOB BODY (4 workers' common job):
+0:000> u SkyrimSE+0x6d4620 L40
+SkyrimSE+0x6d4620:
+00007ff7`b53e4620 85fe            test    esi,edi
+00007ff7`b53e4622 95              xchg    eax,ebp
+00007ff7`b53e4623 2c22            sub     al,22h
+00007ff7`b53e4625 d0987af6f98c    rcr     byte ptr [rax-73060986h],1
+00007ff7`b53e462b 035e83          add     ebx,dword ptr [rsi-7Dh]
+00007ff7`b53e462e 61              ???
+00007ff7`b53e462f 1b861e71d1bb    sbb     eax,dword ptr [rsi-442E8EE2h]
+00007ff7`b53e4635 fd              std
+00007ff7`b53e4636 31a43b894c1f63  xor     dword ptr [rbx+rdi+631F4C89h],esp
+00007ff7`b53e463d 3e12d7          adc     dl,bh
+00007ff7`b53e4640 94              xchg    eax,esp
+00007ff7`b53e4641 734d            jae     SkyrimSE+0x6d4690 (00007ff7`b53e4690)
+00007ff7`b53e4643 ea              ???
+00007ff7`b53e4644 96              xchg    eax,esi
+00007ff7`b53e4645 c13ac7          sar     dword ptr [rdx],0C7h
+00007ff7`b53e4648 df10            fist    word ptr [rax]
+00007ff7`b53e464a 97              xchg    eax,edi
+00007ff7`b53e464b cc              int     3
+00007ff7`b53e464c 8e8185889232    mov     es,word ptr [rcx+32928885h]
+00007ff7`b53e4652 7b13            jnp     SkyrimSE+0x6d4667 (00007ff7`b53e4667)
+00007ff7`b53e4654 a24e51f259e7a7e7fc mov   byte ptr [FCE7A7E759F2514Eh],al
+00007ff7`b53e465d 18f6            sbb     dh,dh
+00007ff7`b53e465f 1a06            sbb     al,byte ptr [rsi]
+00007ff7`b53e4661 3d598d3da1      cmp     eax,0A13D8D59h
+00007ff7`b53e4666 805ded6a        sbb     byte ptr [rbp-13h],6Ah
+00007ff7`b53e466a 05fb49b671      add     eax,71B649FBh
+00007ff7`b53e466f 430cf9          or      al,0F9h
+00007ff7`b53e4672 d5              ???
+00007ff7`b53e4673 13fc            adc     edi,esp
+00007ff7`b53e4675 8cfd            mov     ebp,st(-1)
+00007ff7`b53e4677 60              ???
+00007ff7`b53e4678 0d6332ae51      or      eax,51AE3263h
+00007ff7`b53e467d cf              iretd
+00007ff7`b53e467e 86de            xchg    bl,dh
+00007ff7`b53e4680 f3              ???
+00007ff7`b53e4681 17              ???
+00007ff7`b53e4682 b15b            mov     cl,5Bh
+00007ff7`b53e4684 90              nop
+00007ff7`b53e4685 0e              ???
+00007ff7`b53e4686 7bfa            jnp     SkyrimSE+0x6d4682 (00007ff7`b53e4682)
+00007ff7`b53e4688 f758e9          neg     dword ptr [rax-17h]
+00007ff7`b53e468b e677            out     77h,al
+00007ff7`b53e468d 3520d44a91      xor     eax,914AD420h
+00007ff7`b53e4692 dc74578b        fdiv    qword ptr [rdi+rdx*2-75h]
+00007ff7`b53e4696 49210d4e4666c6  and     qword ptr [00007ff7`7ba48ceb],rcx
+00007ff7`b53e469d 82              ???
+00007ff7`b53e469e a8cb            test    al,0CBh
+00007ff7`b53e46a0 4e              ???
+00007ff7`b53e46a1 1e              ???
+00007ff7`b53e46a2 dfea            fucomip st,st(2)
+00007ff7`b53e46a4 a9bef8efd2      test    eax,0D2EFF8BEh
+00007ff7`b53e46a9 1a1a            sbb     bl,byte ptr [rdx]
+00007ff7`b53e46ab f8              clc
+00007ff7`b53e46ac 7c08            jl      SkyrimSE+0x6d46b6 (00007ff7`b53e46b6)
+00007ff7`b53e46ae 9e              sahf
+00007ff7`b53e46af aa              stos    byte ptr [rdi]
+00007ff7`b53e46b0 c5              ???
+00007ff7`b53e46b1 1bda            sbb     ebx,edx
+00007ff7`b53e46b3 6e              outs    dx,byte ptr [rsi]
+00007ff7`b53e46b4 8354f1771f      adc     dword ptr [rcx+rsi*8+77h],1Fh
+00007ff7`b53e46b9 61              ???
+00007ff7`b53e46ba ce              ???
+00007ff7`b53e46bb bdfcc5b244      mov     ebp,44B2C5FCh
+00007ff7`b53e46c0 9a              ???
+0:000> .echo ===CALL_SITE_6ef480===
+===CALL_SITE_6ef480===
+0:000> u SkyrimSE+0x6ef230 L40
+SkyrimSE+0x6ef230:
+00007ff7`b53ff230 301d104e6dc4    xor     byte ptr [00007ff7`79ad4046],bl
+00007ff7`b53ff236 e612            out     12h,al
+00007ff7`b53ff238 6bba6a4dc63faa  imul    edi,dword ptr [rdx+3FC64D6Ah],0FFFFFFAAh
+00007ff7`b53ff23f 7770            ja      SkyrimSE+0x6ef2b1 (00007ff7`b53ff2b1)
+00007ff7`b53ff241 c0b3bc455318ee  sal     byte ptr [rbx+185345BCh],0EEh
+00007ff7`b53ff248 1f              ???
+00007ff7`b53ff249 e17c            loope   SkyrimSE+0x6ef2c7 (00007ff7`b53ff2c7)
+00007ff7`b53ff24b c5              ???
+00007ff7`b53ff24c f8              clc
+00007ff7`b53ff24d e593            in      eax,93h
+00007ff7`b53ff24f 3b65a4          cmp     esp,dword ptr [rbp-5Ch]
+00007ff7`b53ff252 3b56c4          cmp     edx,dword ptr [rsi-3Ch]
+00007ff7`b53ff255 50              push    rax
+00007ff7`b53ff256 b7dd            mov     bh,0DDh
+00007ff7`b53ff258 fd              std
+00007ff7`b53ff259 9e              sahf
+00007ff7`b53ff25a f6fc            idiv    ah
+00007ff7`b53ff25c 07              ???
+00007ff7`b53ff25d 99              cdq
+00007ff7`b53ff25e 323a            xor     bh,byte ptr [rdx]
+00007ff7`b53ff260 8f              ???
+00007ff7`b53ff261 0c53            or      al,53h
+00007ff7`b53ff263 dce8            fsub    st(0),st
+00007ff7`b53ff265 af              scas    dword ptr [rdi]
+00007ff7`b53ff266 ca0569          retf    6905h
+00007ff7`b53ff269 fe              ???
+00007ff7`b53ff26a d4              ???
+00007ff7`b53ff26b 105974          adc     byte ptr [rcx+74h],bl
+00007ff7`b53ff26e 391e            cmp     dword ptr [rsi],ebx
+00007ff7`b53ff270 3c32            cmp     al,32h
+00007ff7`b53ff272 72f9            jb      SkyrimSE+0x6ef26d (00007ff7`b53ff26d)
+00007ff7`b53ff274 2d3fce7332      sub     eax,3273CE3Fh
+00007ff7`b53ff279 96              xchg    eax,esi
+00007ff7`b53ff27a 2521089413      and     eax,13940821h
+00007ff7`b53ff27f db              ???
+00007ff7`b53ff280 fe              ???
+00007ff7`b53ff281 6d              ins     dword ptr [rdi],dx
+00007ff7`b53ff282 18c0            sbb     al,al
+00007ff7`b53ff284 bd1cc17519      mov     ebp,1975C11Ch
+00007ff7`b53ff289 d5              ???
+00007ff7`b53ff28a 8488110f5801    test    byte ptr [rax+1580F11h],cl
+00007ff7`b53ff290 8f              ???
+00007ff7`b53ff291 9f              lahf
+00007ff7`b53ff292 011f            add     dword ptr [rdi],ebx
+00007ff7`b53ff294 9d              popfq
+00007ff7`b53ff295 48e259          loop    SkyrimSE+0x6ef2f1 (00007ff7`b53ff2f1)
+00007ff7`b53ff298 bd10a1e6a7      mov     ebp,0A7E6A110h
+00007ff7`b53ff29d 9b              wait
+00007ff7`b53ff29e e8da75ea2c      call    00007ff7`e22a687d
+00007ff7`b53ff2a3 bba86a6a51      mov     ebx,516A6AA8h
+00007ff7`b53ff2a8 5c              pop     rsp
+00007ff7`b53ff2a9 a4              movs    byte ptr [rdi],byte ptr [rsi]
+00007ff7`b53ff2aa b2bc            mov     dl,0BCh
+00007ff7`b53ff2ac 868c6845e3a899  xchg    cl,byte ptr [rax+rbp*2-66571CBBh]
+00007ff7`b53ff2b3 05af44ab6e      add     eax,6EAB44AFh
+00007ff7`b53ff2b8 1f              ???
+00007ff7`b53ff2b9 d9b85bae0f19    fnstcw  word ptr [rax+190FAE5Bh]
+00007ff7`b53ff2bf 2defb8a8dd      sub     eax,0DDA8B8EFh
+00007ff7`b53ff2c4 fa              cli
+00007ff7`b53ff2c5 5a              pop     rdx
+00007ff7`b53ff2c6 dc7946          fdivr   qword ptr [rcx+46h]
+00007ff7`b53ff2c9 89c6            mov     esi,eax
+00007ff7`b53ff2cb 98              cwde
+00007ff7`b53ff2cc 9a              ???
+0:000> .echo ===PASS2_DONE===
+===PASS2_DONE===
+0:000> q
+quit:
+NatVis script unloaded from 'C:\Program Files\WindowsApps\Microsoft.WinDbg_1.2603.20001.0_x64__8wekyb3d8bbwe\amd64\Visualizers\atlmfc.natvis'
+NatVis script unloaded from 'C:\Program Files\WindowsApps\Microsoft.WinDbg_1.2603.20001.0_x64__8wekyb3d8bbwe\amd64\Visualizers\concurrency.natvis'
+NatVis script unloaded from 'C:\Program Files\WindowsApps\Microsoft.WinDbg_1.2603.20001.0_x64__8wekyb3d8bbwe\amd64\Visualizers\cpp_rest.natvis'
+NatVis script unloaded from 'C:\Program Files\WindowsApps\Microsoft.WinDbg_1.2603.20001.0_x64__8wekyb3d8bbwe\amd64\Visualizers\ObjectiveC.natvis'
+NatVis script unloaded from 'C:\Program Files\WindowsApps\Microsoft.WinDbg_1.2603.20001.0_x64__8wekyb3d8bbwe\amd64\Visualizers\stl.natvis'
+NatVis script unloaded from 'C:\Program Files\WindowsApps\Microsoft.WinDbg_1.2603.20001.0_x64__8wekyb3d8bbwe\amd64\Visualizers\Windows.Data.Json.natvis'
+NatVis script unloaded from 'C:\Program Files\WindowsApps\Microsoft.WinDbg_1.2603.20001.0_x64__8wekyb3d8bbwe\amd64\Visualizers\Windows.Devices.Geolocation.natvis'
+NatVis script unloaded from 'C:\Program Files\WindowsApps\Microsoft.WinDbg_1.2603.20001.0_x64__8wekyb3d8bbwe\amd64\Visualizers\Windows.Devices.Sensors.natvis'
+NatVis script unloaded from 'C:\Program Files\WindowsApps\Microsoft.WinDbg_1.2603.20001.0_x64__8wekyb3d8bbwe\amd64\Visualizers\Windows.Media.natvis'
+NatVis script unloaded from 'C:\Program Files\WindowsApps\Microsoft.WinDbg_1.2603.20001.0_x64__8wekyb3d8bbwe\amd64\Visualizers\windows.natvis'
+NatVis script unloaded from 'C:\Program Files\WindowsApps\Microsoft.WinDbg_1.2603.20001.0_x64__8wekyb3d8bbwe\amd64\Visualizers\winrt.natvis'

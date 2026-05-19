@@ -56,14 +56,15 @@ namespace FreezeLogger::Config {
                 out.watchdog.annotate_on_resolve = GetOr<bool>         (*w, "annotate_on_resolve", out.watchdog.annotate_on_resolve);
             }
             if (auto* s = root.get_as<toml::table>("snapshot")) {
-                out.snapshot.include_threads    = GetOr<bool>         (*s, "include_threads",    out.snapshot.include_threads);
-                out.snapshot.include_modules    = GetOr<bool>         (*s, "include_modules",    out.snapshot.include_modules);
-                out.snapshot.include_papyrus    = GetOr<bool>         (*s, "include_papyrus",    out.snapshot.include_papyrus);
-                out.snapshot.include_animgraph  = GetOr<bool>         (*s, "include_animgraph",  out.snapshot.include_animgraph);
-                out.snapshot.include_engine     = GetOr<bool>         (*s, "include_engine",     out.snapshot.include_engine);
-                out.snapshot.include_system     = GetOr<bool>         (*s, "include_system",     out.snapshot.include_system);
-                out.snapshot.include_ringbuffer = GetOr<bool>         (*s, "include_ringbuffer", out.snapshot.include_ringbuffer);
-                out.snapshot.max_threads        = GetOr<std::uint32_t>(*s, "max_threads",        out.snapshot.max_threads);
+                out.snapshot.include_threads      = GetOr<bool>         (*s, "include_threads",      out.snapshot.include_threads);
+                out.snapshot.include_modules      = GetOr<bool>         (*s, "include_modules",      out.snapshot.include_modules);
+                out.snapshot.include_papyrus      = GetOr<bool>         (*s, "include_papyrus",      out.snapshot.include_papyrus);
+                out.snapshot.include_animgraph    = GetOr<bool>         (*s, "include_animgraph",    out.snapshot.include_animgraph);
+                out.snapshot.include_engine       = GetOr<bool>         (*s, "include_engine",       out.snapshot.include_engine);
+                out.snapshot.include_system       = GetOr<bool>         (*s, "include_system",       out.snapshot.include_system);
+                out.snapshot.include_ringbuffer   = GetOr<bool>         (*s, "include_ringbuffer",   out.snapshot.include_ringbuffer);
+                out.snapshot.max_threads          = GetOr<std::uint32_t>(*s, "max_threads",          out.snapshot.max_threads);
+                out.snapshot.max_frames_per_stack = GetOr<std::uint32_t>(*s, "max_frames_per_stack", out.snapshot.max_frames_per_stack);
             }
             if (auto* r = root.get_as<toml::table>("ringbuffer")) {
                 out.ringbuffer.papyrus_lines = GetOr<std::uint32_t>(*r, "papyrus_lines", out.ringbuffer.papyrus_lines);

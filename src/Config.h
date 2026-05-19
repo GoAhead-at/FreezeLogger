@@ -7,23 +7,37 @@
 namespace FreezeLogger::Config {
 
     struct Watchdog {
-        // 30 s: high enough to ride out heavy save-loads / cell transitions
-        // on big modlists (Nolvus etc.) without false-positive snapshots.
-        std::uint32_t threshold_ms        = 30000;
+        // 15 s: middle ground.
+        //   - Above 99 % of legitimate Nolvus save-loads / cell transitions.
+        //   - Short enough that a real freeze is captured before most users
+        //     give up and kill the process.
+        //   - Earlier 30 s default missed real freezes when users force-killed
+        //     within ~20-25 s; new default keeps that window comfortable.
+        std::uint32_t threshold_ms        = 15000;
         std::uint32_t check_interval_ms   = 500;
         std::uint32_t snapshot_cooldown_s = 60;
         bool          annotate_on_resolve = true;
     };
 
     struct Snapshot {
-        bool          include_threads     = true;
-        bool          include_modules     = true;
-        bool          include_papyrus     = true;
-        bool          include_animgraph   = true;
-        bool          include_engine      = true;
-        bool          include_system      = true;
-        bool          include_ringbuffer  = true;
-        std::uint32_t max_threads         = 64;
+        bool          include_threads        = true;
+        bool          include_modules        = true;
+        bool          include_papyrus        = true;
+        bool          include_animgraph      = true;
+        bool          include_engine         = true;
+        bool          include_system         = true;
+        bool          include_ringbuffer     = true;
+        // Raised from 64 -> 1024: the freeze captured on 2026-05-17 had 381
+        // total threads in the process, of which 256 were walked (the rest
+        // dropped). Investigation of "dispatch+wait" deadlock signatures
+        // requires seeing the *producer* thread that should have signaled
+        // the main loop's wait; that thread can be anywhere in the pool.
+        std::uint32_t max_threads            = 1024;
+        // Raised from a hard-coded 256 -> 120 (configurable): per-thread
+        // stack walks rarely exceed 30 frames in the captured snapshots,
+        // but Skyrim's Bethesda netcode and Steam overlay threads can hit
+        // ~80. 120 leaves headroom while shrinking total report size.
+        std::uint32_t max_frames_per_stack   = 120;
     };
 
     struct RingBuffer {

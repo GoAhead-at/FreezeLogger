@@ -1,0 +1,83 @@
+# FreezeLogger default configuration.
+# Goes into <Skyrim>/Data/SKSE/Plugins/FreezeLogger.toml.
+# Every key is optional; missing keys fall back to the values shown below.
+
+[watchdog]
+# How long the heartbeat must stagnate before we trip a freeze.
+# Default is 15 s — enough to ride out almost all legitimate save-loads,
+# cell transitions and shader compilation on heavy modlists, but short
+# enough that a real freeze is caught well before most users give up and
+# force-kill the process. Drop to 5000-10000 if you're actively chasing a
+# specific repro; raise to 30000 if you experience long but legitimate
+# main-thread blocks (e.g. very heavy alchemy crafting menus).
+threshold_ms        = 15000
+
+# How often the watchdog wakes up to compare heartbeats vs threshold.
+check_interval_ms   = 500
+
+# Minimum gap between two snapshots for the same persisting freeze.
+snapshot_cooldown_s = 60
+
+# When the heartbeat resumes, append "Resolved at T+X ms" to the existing
+# report instead of treating the next stall as a fresh event.
+annotate_on_resolve = true
+
+
+[snapshot]
+include_threads       = true
+include_modules       = true
+include_papyrus       = true
+include_animgraph     = true   # player-only (lite) in v1
+include_engine        = true
+include_system        = true
+include_ringbuffer    = true
+# Raised after the 2026-05-17 dispatch+wait deadlock investigation: a
+# Skyrim run can have 380+ threads (Bethesda netcode + Steam overlay +
+# NVIDIA driver + Skyrim's own pools), and the producer thread that
+# *should* have signaled the main-loop wait can be anywhere among them.
+# 1024 keeps the safety cap but lets us see the whole pool.
+max_threads           = 1024
+# Per-thread stack-walk depth. Most stacks are <30 frames; 120 leaves
+# generous headroom for Steam overlay/NVIDIA driver depth without
+# blowing up the report size.
+max_frames_per_stack  = 120
+
+
+[ringbuffer]
+papyrus_lines = 100
+skse_events   = 50
+
+
+[minidump]
+# OFF by default. Toggle on when chasing a specific freeze: a .dmp file is
+# written next to the report and can be opened directly in WinDbg / VS.
+enabled       = false
+
+# "normal", "normal+threadinfo", "normal+threadinfo+indirect" (recommended
+# when ON), or "fullmemory" (very large dumps; rarely needed).
+flags         = "normal+threadinfo+indirect"
+
+retain_last_n = 5
+
+
+[output]
+# Empty = Documents/My Games/Skyrim Special Edition/SKSE/FreezeLogger
+directory           = ""
+keep_last_n_reports = 50
+
+
+[symbols]
+# OFF by default. Symbol resolution happens with the captured threads
+# suspended, so a network round-trip to download a PDB while a snapshot
+# is in flight can extend the in-game freeze by several seconds. Enable
+# this only when you want richer Windows/CRT frames in the report and
+# accept the trade-off, or run the offline post-processor instead.
+use_ms_symbol_server = false
+
+# Empty = <output>/symbols
+cache_directory      = ""
+
+
+[logging]
+# trace | debug | info | warn | error
+level = "info"

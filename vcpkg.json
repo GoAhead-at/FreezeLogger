@@ -1,0 +1,21 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "freezelogger",
+  "version": "0.1.0",
+  "description": "SKSE plugin that detects and diagnoses Skyrim hard freezes",
+  "dependencies": [
+    "commonlibsse-ng",
+    "tomlplusplus"
+  ],
+  "features": {
+    "tests": {
+      "description": "Build Catch2 unit tests",
+      "dependencies": ["catch2"]
+    }
+  },
+  "default-features": ["tests"],
+  "builtin-baseline": "bd1ef2df46303989eeb048eb7aa9b816aa46365e",
+  "overrides": [
+    { "name": "fmt", "version": "8.0.1" }
+  ]
+}

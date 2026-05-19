@@ -1,6 +1,8 @@
 #include "PCH.h"
 #include "snapshot/Engine.h"
 
+#include "snapshot/MainWaitProbe.h"
+
 namespace FreezeLogger::Snapshot::Engine {
 
     namespace {
@@ -115,6 +117,8 @@ namespace FreezeLogger::Snapshot::Engine {
         WritePlayer(a_os);
         WriteUI(a_os);
         WriteCalendar(a_os);
+        a_os << "\n";
+        MainWaitProbe::Write(a_os);
     }
 
 }

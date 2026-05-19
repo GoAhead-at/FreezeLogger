@@ -145,7 +145,8 @@ namespace FreezeLogger::Snapshot::Threads {
 #error FreezeLogger only supports x64.
 #endif
 
-            constexpr int kMaxFrames = 256;
+            const auto kMaxFrames = static_cast<int>(
+                std::max<std::uint32_t>(1u, Config::Get().snapshot.max_frames_per_stack));
             int frameNo = 0;
 
             // Hold the symbols mutex for the whole walk: DbgHelp is not
