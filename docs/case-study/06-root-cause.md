@@ -203,12 +203,14 @@ The end-to-end conclusion rests on:
   via the well-understood Singleton-A protocol.
 
 The remaining ambiguity is whether *every* historical Site A freeze
-corresponds to this same lock pair. Spot-checks against earlier
-reports (May 17 and May 18) show all four spinning workers parked at
-`id 12210 +0x8a` with similar register patterns, which is consistent
-but not yet rigorously confirmed across the older logs (the earlier
-heuristic detector's tighter state filter `<= 2` was only added on
-May 19; older logs report state values up to 4).
+corresponds to this same lock pair. The 12:04 report is the only one
+that has been analysed end-to-end with the AB-BA topology in mind.
+Earlier reports were captured before the heuristic candidate detector
+existed in its current form (the tighter state filter `<= 2` was only
+added on May 19), so they do not contain comparable lock-owner
+readouts. A retroactive analysis of the older logs has *not* been
+performed in this investigation. It is plausible but unverified that
+the same lock pair is responsible for the earlier freezes.
 
 ## See also
 

@@ -17,18 +17,39 @@ logic or its message-box popup was misbehaving and causing the freeze.
   contains both a fast scan-and-cancel path and a notification path.
 
 ### Why "Recursion FPS Fix causes the freeze" is ruled out
-1. The user clarified: a *hard freeze* is observed, not a popup. The
-   updated version uses a corner toast (`RE::DebugNotification`) by
-   default, not a modal `RE::DebugMessageBox`. Even when configured as
-   a popup, the popup never appeared during these freezes.
-2. Reproduced the freeze with Recursion FPS Fix disabled. Same Site A
-   wait signature.
-3. Stack traces never show any `RecursionFPSFix.dll` frame on either
-   the main thread or any worker at freeze time.
 
-The mod is not on the lock-acquiring code paths and is not present in
-any frame at freeze time. It is therefore not the cause of the AB-BA
+We did *not* run a controlled "disable the mod and try to reproduce"
+test - the user has consistently kept the mod installed. The argument
+against the mod being the cause is structural rather than empirical:
+
+1. **Wrong code path entirely.** The mod's hook is installed at
+   `id 98130 +0x7F`, which is a Papyrus VM stack-frame-overflow check
+   site. The deadlock lives in the worker-dispatch chain
+   `id 67147 -> id 68058 -> id 68010 -> id 40289 -> id 40706 / id 19369 / id 40333`,
+   which is unrelated to Papyrus VM stack handling. The two regions
+   of the engine do not share locks or call into each other on the
+   relevant paths.
+2. **No `RecursionFPSFix.dll` frame at freeze time.** The freeze
+   reports cover all 248+ threads in the process. None of them shows
+   a `RecursionFPSFix.dll` frame on the stack at the moment of the
+   freeze - not on the main thread, not on either spinning worker
+   (TID 5096, TID 18456), not on the tail-blocked workers, not on
+   any other suspended thread.
+3. **The mod's trigger has never fired.** The user reports no popup
+   or notification has ever been observed in either the original or
+   the updated version, which means the recursion-handling code
+   (Path B in the source diff in `04-plugin-evolution.md`) has never
+   executed in this install. The cold path the mod adds is
+   essentially a tail call to the engine's original target.
+
+The mod is therefore not on the lock-acquiring code paths and is not
+present in any frame at freeze time. It is not the cause of the AB-BA
 deadlock.
+
+Note: this conclusion would be stronger with a controlled "disable
+the mod for an N-hour play session" experiment, which has not been
+performed. The structural argument is sufficient to rule out the
+mod-as-cause hypothesis without that test.
 
 ### Open question: empirical observation of fewer freezes with the
 updated version
@@ -118,20 +139,43 @@ freeze, sitting between the Skyrim wait-site and the rest of
   freeze.
 
 ### Why we ruled it out
-1. Read hdtSMP's source (the local `hdtSMP64/src` checkout). The
-   `Main::Update` hook in HDT-SMP is a passthrough: do its physics
-   step, then tail-call into the original `Main::Update` body. There
-   is no lock acquisition that survives across the tail call.
+1. Read hdtSMP's source at `hdtSMP64/src/Hooks.cpp`. The
+   `Main::Update` hook is a **wrap-around** hook, not a passthrough:
+
+   ```cpp
+   void MainHooks::Update(RE::Main* const a_this) {
+       _Update(a_this);                         // call original Main::Update
+       const auto& runtimeData = a_this->GetRuntimeData();
+       if (runtimeData.quitGame) {
+           Events::Sources::ShutdownEventEventSource::GetSingleton()->SendEvent(&e);
+       } else {
+           Events::FrameEvent e;
+           e.gamePaused = runtimeData.freezeTime;
+           Events::Sources::FrameEventSource::GetSingleton()->SendEvent(&e);
+       }
+   }
+   ```
+
+   That is: call original first, then dispatch a frame-event. No
+   physics work, no allocations, no locks are taken in the
+   pre-`_Update` portion. The HDT-SMP frame visible on main's stack
+   at freeze time is simply the saved return address pointing into
+   the post-`_Update` portion of this function, which has not yet
+   executed because `_Update` is still blocked inside the engine.
 2. The captured wait is happening *inside* `id 35565` (the original
-   `Main::Update`) at `+0x5b35dd -> +0x5765ff`, which is far past
-   HDT-SMP's tail-call point.
+   `Main::Update`) at `+0x5b35dd -> +0x5765ff`, which is reached
+   inside the `_Update(a_this)` call on line 204 of `Hooks.cpp`.
+   Whatever is causing the wait was constructed by Skyrim itself
+   in that call, not by HDT-SMP's wrapper.
 3. HDT-SMP frames never appear on any of the spinning worker
-   threads.
+   threads (TID 5096, 18456, 13052, 28176). HDT-SMP does not
+   participate in the worker dispatch chain at all.
 
 ### Lesson
 A frame on the stack *between* the wait site and the engine entry
-point is usually a hook trampoline, not a lock holder. Always check
-the hook source before blaming it.
+point is usually a hook return-address into a wrapper, not a lock
+holder. Always read the hook source to understand the wrapper
+shape (pre-hook, post-hook, or wrap-around) before blaming it.
 
 ## H3 - "Site B is the same as Site A, just observed from a different
 line in the wait."

@@ -83,9 +83,19 @@ small enough to throw away and rewrite, and they target one question each.
   Used briefly during the heuristic-detector design phase as a thought
   experiment; the heuristic candidate detector achieves the same goal at
   zero runtime cost (it only runs at freeze time).
-- **Recursion FPS Fix as the explanation** - early hypothesis. Ruled out
-  after we confirmed Recursion Fix never fired and the freezes happened
-  with it disabled too.
-- **HDT-SMP as the explanation** - confirmed via source review and stack
-  inspection that `hdtsmp64.dll` is a passthrough hook for `Main::Update`,
-  not the holder of the lock that main is blocked on.
+- **Recursion FPS Fix as the explanation** - early hypothesis. Ruled
+  out structurally: its hook target (`id 98130 +0x7F`, Papyrus VM
+  stack-overflow check) is not on the worker-dispatch chain that
+  deadlocks, no `RecursionFPSFix.dll` frame appears on any thread at
+  freeze time, and the user reports the recursion trigger has never
+  fired (so the mod's cold path is essentially a tail call to the
+  engine's original target). See `07-discarded-hypotheses.md` H1.
+  Note: a controlled "disable the mod and re-test" experiment was
+  *not* performed.
+- **HDT-SMP as the explanation** - confirmed via source review
+  (`hdtSMP64/src/Hooks.cpp`, `MainHooks::Update`) that the
+  `Main::Update` hook is a wrap-around (`call _Update; dispatch
+  FrameEvent`), not a lock-holder. The HDT-SMP frame on main's stack
+  at freeze time is the saved return address into the wrapper's
+  post-`_Update` portion, which is waiting for the engine call to
+  return. See `07-discarded-hypotheses.md` H2.

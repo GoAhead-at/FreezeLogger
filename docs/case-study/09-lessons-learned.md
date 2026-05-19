@@ -186,9 +186,14 @@ the risk.
 ### 16. Read the source of every loaded mod before blaming it.
 
 HDT-SMP appeared on a critical stack frame and was suspect for
-about an hour. Reading the source confirmed in five minutes that
-it was a passthrough and could not be the lock-holder. Cheaper than
-running another two freeze cycles.
+about an hour. Reading `hdtSMP64/src/Hooks.cpp` showed that
+`MainHooks::Update` is a wrap-around hook (`call _Update; dispatch
+FrameEvent`) that takes no locks before the original engine call.
+The HDT-SMP frame visible on main's stack at freeze time is just
+the saved return address into the wrapper's post-`_Update`
+portion, which has not yet executed because `_Update` is still
+blocked. Cheaper to read the hook source than to run another two
+freeze cycles guessing.
 
 ### 17. "Process is running" is not the same as "thread is running".
 
