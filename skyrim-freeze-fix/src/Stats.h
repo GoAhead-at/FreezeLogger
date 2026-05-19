@@ -3,25 +3,38 @@
 namespace WorkerSpinLockFix::Stats {
 
     // -------------------------------------------------------------------
-    // v0.11 counters (Strategy F - stale-owner reaper).
+    // v0.13 counters (extends v0.12 with passthrough).
     //
-    //   reaped(name):  how many times the reaper has force-released the
-    //                  named lock because its current holder was a thread
-    //                  that no longer exists in the process.
-    //   live_skips(name):
-    //                  how many times the reaper noticed the lock had
-    //                  been held by the same TID for longer than the
-    //                  staleness threshold but the holder was still a
-    //                  live thread, so we declined to act.
-    //   races(name):   how many times our CAS-based force-release lost
-    //                  to a concurrent engine-side modification (the
-    //                  engine released or transitioned the state field
-    //                  between our read and our compare-exchange). These
-    //                  are NOT errors; they just mean the reaper backed
-    //                  off and let the engine handle it.
+    // The plugin runs two layers concurrently:
+    //
+    //   - Approach G (structural): one std::recursive_mutex shared
+    //     between the call-site hooks of id 19369 and id 40706.
+    //     `OnEntry(name)` is called on every (top-level) entry into
+    //     either function; `OnRecursiveEntry(name)` is called when a
+    //     thread already holds the mutex and re-enters (recursive
+    //     id 19369, or id 40706 -> id 19369 chain). `OnContended()`
+    //     is called when a thread had to wait for the mutex.
+    //   - Approach F (reaper, safety net): same as v0.11. `OnReaped`,
+    //     `OnLiveSkip`, `OnRace` semantics unchanged.
+    //
+    // The two are reported separately each interval so we can verify
+    // that Approach G is doing the work (entry counts grow, mutex
+    // gets contended occasionally) and that the reaper stays at zero
+    // (no phantom-owner conditions because Approach G prevents the
+    // setup that produces them).
     // -------------------------------------------------------------------
 
-    void OnReaped(std::string_view which);
+    void OnEntry(std::string_view which);              // "id_19369" | "id_40706"
+    void OnRecursiveEntry(std::string_view which);
+    void OnContended(std::string_view which);
+
+    // v0.13: id_40706 invocations whose this+0x150 != &LockB. These
+    // are per-object instances, not on the AB-BA path; we let them
+    // through without taking our mutex. Counted separately so the
+    // ratio of serialised vs pass-through entries is visible.
+    void OnPassthrough(std::string_view which);
+
+    void OnReaped(std::string_view which);             // "LockA" | "LockB"
     void OnLiveSkip(std::string_view which);
     void OnRace(std::string_view which);
 

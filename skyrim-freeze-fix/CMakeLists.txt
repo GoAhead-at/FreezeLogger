@@ -1,8 +1,8 @@
 cmake_minimum_required(VERSION 3.26)
 
 project(WorkerSpinLockFix
-    VERSION       0.11.0
-    DESCRIPTION   "Stale-owner reaper for the engine's two AB-BA-prone BSSpinLocks: when LockA/LockB stays held for >2s by a thread that no longer exists, force-release it"
+    VERSION       0.13.0
+    DESCRIPTION   "Approach G narrowed: serialise id 19369 unconditionally and id 40706 ONLY when this+0x150 resolves to the global LockB. Per-object id 40706 instances pass through unchanged. Reaper retained as a safety net."
     LANGUAGES     CXX
 )
 
