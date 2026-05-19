@@ -20,6 +20,7 @@ find_package(tomlplusplus  CONFIG REQUIRED)
 
 set(SOURCES
     src/main.cpp
+    src/AddrLib.cpp
     src/Config.cpp
     src/Logger.cpp
     src/MainHook.cpp
@@ -39,10 +40,12 @@ set(SOURCES
     src/snapshot/MainWaitProbe.cpp
     src/snapshot/System.cpp
     src/snapshot/MiniDump.cpp
+    src/snapshot/WaitGraph.cpp
 )
 
 set(HEADERS
     src/PCH.h
+    src/AddrLib.h
     src/Config.h
     src/Heartbeat.h
     src/Logger.h
@@ -63,6 +66,7 @@ set(HEADERS
     src/snapshot/MainWaitProbe.h
     src/snapshot/System.h
     src/snapshot/MiniDump.h
+    src/snapshot/WaitGraph.h
 )
 
 # add_commonlibsse_plugin is provided by the commonlibsse-ng vcpkg port.

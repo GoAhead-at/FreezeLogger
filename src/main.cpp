@@ -1,5 +1,6 @@
 #include "PCH.h"
 
+#include "AddrLib.h"
 #include "Config.h"
 #include "DebugTriggers.h"
 #include "Logger.h"
@@ -82,6 +83,7 @@ extern "C" __declspec(dllexport) bool SKSEPlugin_Load(const SKSE::LoadInterface*
     }
 
     FreezeLogger::Symbols::Init();
+    FreezeLogger::AddrLib::Init();
 
     if (KillSwitchActive()) {
         return true;  // loaded, but inert

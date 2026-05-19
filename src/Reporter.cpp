@@ -1,6 +1,7 @@
 #include "PCH.h"
 #include "Reporter.h"
 
+#include "AddrLib.h"
 #include "Config.h"
 #include "Symbols.h"
 #include "snapshot/AnimGraph.h"
@@ -10,6 +11,7 @@
 #include "snapshot/Papyrus.h"
 #include "snapshot/System.h"
 #include "snapshot/Threads.h"
+#include "snapshot/WaitGraph.h"
 #include "RingBuffer.h"
 
 #include <fstream>
@@ -62,6 +64,9 @@ namespace FreezeLogger::Reporter {
             a_os << "Render age:      " << a_renderAgeMs << " ms\n";
             a_os << "Threshold:       " << cfg.watchdog.threshold_ms << " ms\n";
             a_os << "Symbol server:   " << (Symbols::SearchPath().empty() ? "(none)" : Symbols::SearchPath()) << "\n";
+            a_os << "Address Library: "
+                 << (AddrLib::Available() ? "loaded - " : "<unavailable> - ")
+                 << AddrLib::DiagnosticString() << "\n";
             a_os << "================================================================\n\n";
         }
 
@@ -159,6 +164,12 @@ namespace FreezeLogger::Reporter {
         }
         if (cfg.snapshot.include_engine) {
             Section(os, "Engine state",   [](auto& s){ Snapshot::Engine::Write(s);    });
+        }
+        if (cfg.snapshot.include_threads) {
+            // The wait graph is a thread-cross-cut and only meaningful when
+            // we already have permission to OpenThread/SuspendThread; gate
+            // it on the same toggle as the per-thread walks.
+            Section(os, "Wait graph",     [](auto& s){ Snapshot::WaitGraph::Write(s); });
         }
         if (cfg.snapshot.include_ringbuffer) {
             Section(os, "Recent activity",[](auto& s){ RingBuffer::WriteSnapshot(s);  });

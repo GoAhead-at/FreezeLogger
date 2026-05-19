@@ -49,9 +49,12 @@ skse_events   = 50
 
 
 [minidump]
-# OFF by default. Toggle on when chasing a specific freeze: a .dmp file is
-# written next to the report and can be opened directly in WinDbg / VS.
-enabled       = false
+# ON by default. The text report covers a lot, but a .dmp gives the
+# offline reader full register/memory/code access for replay in WinDbg
+# or Visual Studio. Disk cost is bounded by retain_last_n; default
+# normal+threadinfo+indirect dumps are 30-90 MiB for a full Skyrim
+# process. Set to false to disable on tight-disk systems.
+enabled       = true
 
 # "normal", "normal+threadinfo", "normal+threadinfo+indirect" (recommended
 # when ON), or "fullmemory" (very large dumps; rarely needed).

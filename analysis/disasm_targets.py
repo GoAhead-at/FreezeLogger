@@ -17,7 +17,21 @@ import capstone
 EXE = Path(r"D:\SPIELE\nolvus\Instances\Nolvus Awakening\STOCK GAME\SkyrimSE.exe.unpacked.exe")
 
 TARGETS = [
-    (0x132bd0, "BSSpinLock::Acquire — find which register holds lock ptr"),
+    (0x61c6e0, "id 37388 - parent of id 36854 in TID 18456's stack (must hold LockB)"),
+    (0x6d37b0, "id 40285 - LockB inline acquirer (xrefs span +0x24..+0x650)"),
+    (0x6ef230, "id 40706 - parent of id 37388 in TID 18456's stack"),
+    (0x6d4620, "id 40289 - parent of id 40706 in TID 18456's stack"),
+]
+
+# Site-anchored micro-disasms when we need to see a specific instruction
+# and ~64 bytes of surrounding context. Each tuple is (site_rva, fn_rva, note).
+CALL_SITES_DEFAULTS = [
+    (0x6025fb,  0x602410,  "id 36854 +0x1eb - return from CALL id 19369"),
+    (0x6025d0,  0x602410,  "id 36854 +0x1c0 - 0x40 bytes before that call (any locks?)"),
+    (0x602590,  0x602410,  "id 36854 +0x180 - 0x80 bytes before that call"),
+    (0x602550,  0x602410,  "id 36854 +0x140 - 0xc0 bytes before that call"),
+    (0x602510,  0x602410,  "id 36854 +0x100 - 0x100 bytes before that call"),
+    (0x6024d0,  0x602410,  "id 36854 +0x0c0 - 0x140 bytes before that call"),
 ]
 
 CALL_SITES = []

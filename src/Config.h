@@ -46,7 +46,13 @@ namespace FreezeLogger::Config {
     };
 
     struct MiniDump {
-        bool          enabled       = false;
+        // ON by default. The text report tells us a great deal, but a
+        // .dmp lets the offline reader replay registers, walk arbitrary
+        // memory, and disassemble code paths the live probes didn't
+        // cover. Disk cost is bounded by retain_last_n; default normal+
+        // threadinfo+indirect dumps are 30-90 MiB for a full Skyrim
+        // process. Users on tight disks can flip this off in the TOML.
+        bool          enabled       = true;
         std::string   flags         = "normal+threadinfo+indirect";
         std::uint32_t retain_last_n = 5;
     };
