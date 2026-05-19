@@ -21,6 +21,9 @@ and ultimately used to localize a deadlock to two specific functions inside
 - `07-discarded-hypotheses.md` - What we were wrong about and why.
 - `08-mitigation.md` - Options for fixing or working around the bug.
 - `09-lessons-learned.md` - Takeaways for future engine debugging.
+- `10-future-approaches.md` - Forward-looking summary of what was actually
+  tried in the WorkerSpinLockFix companion plugin (v0.1 - v0.11), why each
+  version failed, and what realistic paths remain.
 - `appendix-A-evidence.md` - Raw freeze logs, disassembly excerpts, register
   dumps used as evidence in the main narrative.
 

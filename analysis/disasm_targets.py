@@ -17,10 +17,8 @@ import capstone
 EXE = Path(r"D:\SPIELE\nolvus\Instances\Nolvus Awakening\STOCK GAME\SkyrimSE.exe.unpacked.exe")
 
 TARGETS = [
-    (0x61c6e0, "id 37388 - parent of id 36854 in TID 18456's stack (must hold LockB)"),
-    (0x6d37b0, "id 40285 - LockB inline acquirer (xrefs span +0x24..+0x650)"),
-    (0x6ef230, "id 40706 - parent of id 37388 in TID 18456's stack"),
-    (0x6d4620, "id 40289 - parent of id 40706 in TID 18456's stack"),
+    (0x296c00, "id 19369 - LockA acquirer (entry-prologue analysis for hook patch size)"),
+    (0x6ef230, "id 40706 - LockB acquirer (entry-prologue analysis for hook patch size)"),
 ]
 
 # Site-anchored micro-disasms when we need to see a specific instruction

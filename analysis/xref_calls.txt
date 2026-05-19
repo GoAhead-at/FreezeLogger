@@ -1,0 +1,221 @@
+﻿====================================================================================================
+CALL/JMP sites to wrap with write_call<5> / write_branch<5>
+====================================================================================================
+
+  id 19369  (entry = 0x296c00):
+    @ 0x00211de4  (id16760 +0x164)  CALL  bytes=e8174e0800
+    @ 0x0022b834  (id17485 +0x164)  CALL  bytes=e8c7b30600
+    @ 0x0022ce1e  (id17521 +0x2ce)  CALL  bytes=e8dd9d0600
+    @ 0x00296c9d  (id19369 +0x9d)  CALL  bytes=e85effffff
+    @ 0x002a8d90  (id19857 +0xd0)  CALL  bytes=e86bdefeff
+    @ 0x002a8ef3  (id19858 +0xd3)  CALL  bytes=e808ddfeff
+    @ 0x002f164b  (id21530 +0x12b)  CALL  bytes=e8b055faff
+    @ 0x002f1699  (id21530 +0x179)  CALL  bytes=e86255faff
+    @ 0x002f91e7  (id21718 +0x1c7)  CALL  bytes=e814daf9ff
+    @ 0x002fef35  (id21854 +0x85)  CALL  bytes=e8c67cf9ff
+    @ 0x002fef65  (id21854 +0xb5)  CALL  bytes=e8967cf9ff
+    @ 0x003ff20a  (id27595 +0x125a)  CALL  bytes=e8f179e9ff
+    @ 0x003ff328  (id27595 +0x1378)  CALL  bytes=e8d378e9ff
+    @ 0x003ff7b2  (id27596 +0x1e2)  CALL  bytes=e84974e9ff
+    @ 0x003ff822  (id27596 +0x252)  CALL  bytes=e8d973e9ff
+    @ 0x005e3798  (id36496 +0x98)  CALL  bytes=e86334cbff
+    @ 0x006025f6  (id36854 +0x1e6)  CALL  bytes=e80546c9ff
+    @ 0x00642529  (id38152 +0x379)  CALL  bytes=e8d246c5ff
+    @ 0x006482a5  (id38256 +0x335)  CALL  bytes=e856e9c4ff
+    @ 0x00648310  (id38256 +0x3a0)  CALL  bytes=e8ebe8c4ff
+    @ 0x0064837d  (id38256 +0x40d)  CALL  bytes=e87ee8c4ff
+    @ 0x0064bf2d  (id38298 +0x33d)  CALL  bytes=e8ceacc4ff
+    @ 0x0064bfa2  (id38298 +0x3b2)  CALL  bytes=e859acc4ff
+    @ 0x0064c06c  (id38298 +0x47c)  CALL  bytes=e88fabc4ff
+    @ 0x0064c2fc  (id38298 +0x70c)  CALL  bytes=e8ffa8c4ff
+    @ 0x0065159b  (id38413 +0x8b)  CALL  bytes=e86056c4ff
+    @ 0x00658c2b  (id38459 +0x17b)  CALL  bytes=e8d0dfc3ff
+    @ 0x00658ca7  (id38459 +0x1f7)  CALL  bytes=e854dfc3ff
+    @ 0x0066888c  (id38617 +0xefc)  CALL  bytes=e86fe3c2ff
+    @ 0x006689d6  (id38617 +0x1046)  CALL  bytes=e825e2c2ff
+    @ 0x00668b8e  (id38617 +0x11fe)  CALL  bytes=e86de0c2ff
+    @ 0x00668c5a  (id38617 +0x12ca)  CALL  bytes=e8a1dfc2ff
+    @ 0x00668f3f  (id38617 +0x15af)  CALL  bytes=e8bcdcc2ff
+    @ 0x0066902a  (id38617 +0x169a)  CALL  bytes=e8d1dbc2ff
+    @ 0x00669073  (id38617 +0x16e3)  CALL  bytes=e888dbc2ff
+    @ 0x0066e019  (id38626 +0x469)  CALL  bytes=e8e28bc2ff
+    @ 0x00688f6f  (id39015 +0x4ff)  CALL  bytes=e88cdcc0ff
+    @ 0x00689030  (id39015 +0x5c0)  CALL  bytes=e8cbdbc0ff
+    @ 0x0068b7d2  (id39024 +0x332)  CALL  bytes=e829b4c0ff
+    @ 0x0069e859  (id39375 +0x2d9)  CALL  bytes=e8a283bfff
+    @ 0x0069e8ef  (id39375 +0x36f)  CALL  bytes=e80c83bfff
+    @ 0x006aa0c5  (id39471 +0x135)  CALL  bytes=e836cbbeff
+    @ 0x006b8254  (id39662 +0x104)  CALL  bytes=e8a7e9bdff
+    @ 0x006c035d  (id39816 +0x6d)  CALL  bytes=e89e68bdff
+    @ 0x00722569  (id41785 +0x89)  CALL  bytes=e89246b7ff
+    @ 0x007cac73  (id46350 +0x1a3)  CALL  bytes=e888bfacff
+    @ 0x00897fce  (id51088 +0x1be)  CALL  bytes=e82dec9fff
+    @ 0x00992c7a  (id55610 +0x4a)  CALL  bytes=e8813f90ff
+    @ 0x009976fd  (id55702 +0x3d)  CALL  bytes=e8fef48fff
+    @ 0x0099772a  (id55702 +0x6a)  CALL  bytes=e8d1f48fff
+
+  id 40706  (entry = 0x6ef230):
+    @ 0x005d823f  (id36359 +0xcf)  CALL  bytes=e8ec6f1100
+    @ 0x005d865d  (id36363 +0x4d)  CALL  bytes=e8ce6b1100
+    @ 0x006d45a6  (id40288 +0x76)  CALL  bytes=e885ac0100
+    @ 0x006d4685  (id40289 +0x65)  CALL  bytes=e8a6ab0100
+
+  id 40285  (entry = 0x6d37b0):
+    @ 0x0015565e  (id13183 +0xee)  CALL  bytes=e84de15700
+    @ 0x00155676  (id13183 +0x106)  CALL  bytes=e835e15700
+    @ 0x005b3b0f  (id35569 +0x3f)  CALL  bytes=e89cfc1100
+    @ 0x005b5676  (id35593 +0x1e6)  CALL  bytes=e835e11100
+    @ 0x005b5737  (id35593 +0x2a7)  CALL  bytes=e874e01100
+    @ 0x005b5c1f  (id35596 +0x4f)  CALL  bytes=e88cdb1100
+    @ 0x0069ac79  (id39346 +0x89)  CALL  bytes=e8328b0300
+    @ 0x0069ccd4  (id39366 +0x794)  CALL  bytes=e8d76a0300
+    @ 0x0069ddb8  (id39373 +0x418)  CALL  bytes=e8f3590300
+    @ 0x0069e31d  (id39373 +0x97d)  CALL  bytes=e88e540300
+
+  id 40333  (entry = 0x6d9720):
+    @ 0x00173813  (id13672 +0xd73)  CALL  bytes=e8085f5600
+    @ 0x001aa6bb  (id14970 +0x14b)  CALL  bytes=e860f05200
+    @ 0x0027db12  (id19000 +0x682)  CALL  bytes=e809bc4500
+    @ 0x0027dbe4  (id19000 +0x754)  CALL  bytes=e837bb4500
+    @ 0x00297dd6  (id19372 +0x606)  CALL  bytes=e845194400
+    @ 0x0029840a  (id19373 +0x27a)  CALL  bytes=e811134400
+    @ 0x005d2aa9  (id36293 +0x29)  JMP  bytes=e9726c1000
+    @ 0x005d2c38  (id36295 +0xb8)  CALL  bytes=e8e36a1000
+    @ 0x005d6f56  (id36356 +0x716)  CALL  bytes=e8c5271000
+    @ 0x005ec043  (id36563 +0x23)  CALL  bytes=e8d8d60e00
+    @ 0x005f504e  (id36644 +0x1ae)  CALL  bytes=e8cd460e00
+    @ 0x005f5c7d  (id36644 +0xddd)  CALL  bytes=e89e3a0e00
+    @ 0x005ff55f  (id36775 +0xaf)  CALL  bytes=e8bca10d00
+    @ 0x00609401  (id36947 +0x241)  CALL  bytes=e81a030d00
+    @ 0x006d4a43  (id40292 +0x1c3)  CALL  bytes=e8d84c0000
+    @ 0x006d4d49  (id40294 +0x1c9)  CALL  bytes=e8d2490000
+    @ 0x006d4fc9  (id40295 +0x1c9)  CALL  bytes=e852470000
+    @ 0x006e3aa7  (id40468 +0xf7)  CALL  bytes=e8745cffff
+
+  id 40334  (entry = 0x6d9890):
+    @ 0x0029413d  (id19315 +0x13d)  CALL  bytes=e84e574400
+    @ 0x002f446a  (id21581 +0x13a)  CALL  bytes=e821543e00
+    @ 0x005aa14f  (id35492 +0xff)  CALL  bytes=e83cf71200
+    @ 0x005c7cab  (id36016 +0xdcb)  CALL  bytes=e8e01b1100
+    @ 0x005d2fb1  (id36298 +0x21)  JMP  bytes=e9da681000
+    @ 0x005f503d  (id36644 +0x19d)  CALL  bytes=e84e480e00
+
+  id 40335  (entry = 0x6d99d0):
+    @ 0x0026ab0b  (id18638 +0x15b)  CALL  bytes=e8c0ee4600
+    @ 0x0026ad26  (id18638 +0x376)  CALL  bytes=e8a5ec4600
+
+Plugin-side constants (paste into Hooks.cpp):
+
+  // id 19369: 50 site(s)
+  constexpr CallSite kCallSites_19369[] = {
+    { 16760, 0x164, kCall },  // 0x211de4
+    { 17485, 0x164, kCall },  // 0x22b834
+    { 17521, 0x2ce, kCall },  // 0x22ce1e
+    { 19369, 0x9d, kCall },  // 0x296c9d
+    { 19857, 0xd0, kCall },  // 0x2a8d90
+    { 19858, 0xd3, kCall },  // 0x2a8ef3
+    { 21530, 0x12b, kCall },  // 0x2f164b
+    { 21530, 0x179, kCall },  // 0x2f1699
+    { 21718, 0x1c7, kCall },  // 0x2f91e7
+    { 21854, 0x85, kCall },  // 0x2fef35
+    { 21854, 0xb5, kCall },  // 0x2fef65
+    { 27595, 0x125a, kCall },  // 0x3ff20a
+    { 27595, 0x1378, kCall },  // 0x3ff328
+    { 27596, 0x1e2, kCall },  // 0x3ff7b2
+    { 27596, 0x252, kCall },  // 0x3ff822
+    { 36496, 0x98, kCall },  // 0x5e3798
+    { 36854, 0x1e6, kCall },  // 0x6025f6
+    { 38152, 0x379, kCall },  // 0x642529
+    { 38256, 0x335, kCall },  // 0x6482a5
+    { 38256, 0x3a0, kCall },  // 0x648310
+    { 38256, 0x40d, kCall },  // 0x64837d
+    { 38298, 0x33d, kCall },  // 0x64bf2d
+    { 38298, 0x3b2, kCall },  // 0x64bfa2
+    { 38298, 0x47c, kCall },  // 0x64c06c
+    { 38298, 0x70c, kCall },  // 0x64c2fc
+    { 38413, 0x8b, kCall },  // 0x65159b
+    { 38459, 0x17b, kCall },  // 0x658c2b
+    { 38459, 0x1f7, kCall },  // 0x658ca7
+    { 38617, 0xefc, kCall },  // 0x66888c
+    { 38617, 0x1046, kCall },  // 0x6689d6
+    { 38617, 0x11fe, kCall },  // 0x668b8e
+    { 38617, 0x12ca, kCall },  // 0x668c5a
+    { 38617, 0x15af, kCall },  // 0x668f3f
+    { 38617, 0x169a, kCall },  // 0x66902a
+    { 38617, 0x16e3, kCall },  // 0x669073
+    { 38626, 0x469, kCall },  // 0x66e019
+    { 39015, 0x4ff, kCall },  // 0x688f6f
+    { 39015, 0x5c0, kCall },  // 0x689030
+    { 39024, 0x332, kCall },  // 0x68b7d2
+    { 39375, 0x2d9, kCall },  // 0x69e859
+    { 39375, 0x36f, kCall },  // 0x69e8ef
+    { 39471, 0x135, kCall },  // 0x6aa0c5
+    { 39662, 0x104, kCall },  // 0x6b8254
+    { 39816, 0x6d, kCall },  // 0x6c035d
+    { 41785, 0x89, kCall },  // 0x722569
+    { 46350, 0x1a3, kCall },  // 0x7cac73
+    { 51088, 0x1be, kCall },  // 0x897fce
+    { 55610, 0x4a, kCall },  // 0x992c7a
+    { 55702, 0x3d, kCall },  // 0x9976fd
+    { 55702, 0x6a, kCall },  // 0x99772a
+  };
+
+  // id 40706: 4 site(s)
+  constexpr CallSite kCallSites_40706[] = {
+    { 36359, 0xcf, kCall },  // 0x5d823f
+    { 36363, 0x4d, kCall },  // 0x5d865d
+    { 40288, 0x76, kCall },  // 0x6d45a6
+    { 40289, 0x65, kCall },  // 0x6d4685
+  };
+
+  // id 40285: 10 site(s)
+  constexpr CallSite kCallSites_40285[] = {
+    { 13183, 0xee, kCall },  // 0x15565e
+    { 13183, 0x106, kCall },  // 0x155676
+    { 35569, 0x3f, kCall },  // 0x5b3b0f
+    { 35593, 0x1e6, kCall },  // 0x5b5676
+    { 35593, 0x2a7, kCall },  // 0x5b5737
+    { 35596, 0x4f, kCall },  // 0x5b5c1f
+    { 39346, 0x89, kCall },  // 0x69ac79
+    { 39366, 0x794, kCall },  // 0x69ccd4
+    { 39373, 0x418, kCall },  // 0x69ddb8
+    { 39373, 0x97d, kCall },  // 0x69e31d
+  };
+
+  // id 40333: 18 site(s)
+  constexpr CallSite kCallSites_40333[] = {
+    { 13672, 0xd73, kCall },  // 0x173813
+    { 14970, 0x14b, kCall },  // 0x1aa6bb
+    { 19000, 0x682, kCall },  // 0x27db12
+    { 19000, 0x754, kCall },  // 0x27dbe4
+    { 19372, 0x606, kCall },  // 0x297dd6
+    { 19373, 0x27a, kCall },  // 0x29840a
+    { 36293, 0x29, kJmp  },  // 0x5d2aa9
+    { 36295, 0xb8, kCall },  // 0x5d2c38
+    { 36356, 0x716, kCall },  // 0x5d6f56
+    { 36563, 0x23, kCall },  // 0x5ec043
+    { 36644, 0x1ae, kCall },  // 0x5f504e
+    { 36644, 0xddd, kCall },  // 0x5f5c7d
+    { 36775, 0xaf, kCall },  // 0x5ff55f
+    { 36947, 0x241, kCall },  // 0x609401
+    { 40292, 0x1c3, kCall },  // 0x6d4a43
+    { 40294, 0x1c9, kCall },  // 0x6d4d49
+    { 40295, 0x1c9, kCall },  // 0x6d4fc9
+    { 40468, 0xf7, kCall },  // 0x6e3aa7
+  };
+
+  // id 40334: 6 site(s)
+  constexpr CallSite kCallSites_40334[] = {
+    { 19315, 0x13d, kCall },  // 0x29413d
+    { 21581, 0x13a, kCall },  // 0x2f446a
+    { 35492, 0xff, kCall },  // 0x5aa14f
+    { 36016, 0xdcb, kCall },  // 0x5c7cab
+    { 36298, 0x21, kJmp  },  // 0x5d2fb1
+    { 36644, 0x19d, kCall },  // 0x5f503d
+  };
+
+  // id 40335: 2 site(s)
+  constexpr CallSite kCallSites_40335[] = {
+    { 18638, 0x15b, kCall },  // 0x26ab0b
+    { 18638, 0x376, kCall },  // 0x26ad26
+  };
