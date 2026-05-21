@@ -5,6 +5,8 @@
 
 #include <Windows.h>
 
+#include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -15,6 +17,8 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include <RE/Skyrim.h>
@@ -25,6 +29,8 @@
 #include <spdlog/spdlog.h>
 
 #include <toml++/toml.h>
+
+#include <SafetyHook.hpp>
 
 namespace logs = SKSE::log;
 using namespace std::literals;

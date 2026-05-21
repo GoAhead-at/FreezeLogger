@@ -1,14 +1,12 @@
 {
   "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
   "name": "workerspinlockfix",
-  "version": "0.1.0",
-  "description": "SKSE plugin that serializes Skyrim's worker dispatch through two known BSSpinLock acquirers to break an AB-BA deadlock.",
+  "version": "1.0.0",
+  "description": "SKSE plugin for Skyrim SE 1.5.97. Surgical inline hook on BSSpinLock::Acquire that detects AB-BA cycles between two engine BSSpinLock globals at runtime and force-releases the offending lock so the game keeps running.",
   "dependencies": [
     "commonlibsse-ng",
-    "tomlplusplus"
+    "tomlplusplus",
+    "safetyhook"
   ],
-  "builtin-baseline": "bd1ef2df46303989eeb048eb7aa9b816aa46365e",
-  "overrides": [
-    { "name": "fmt", "version": "8.0.1" }
-  ]
+  "builtin-baseline": "4bb07a326d9b9bce3703272a509e5bc25dd9cfd5"
 }

@@ -4,6 +4,7 @@
 #include "Hooks.h"
 #include "Logger.h"
 #include "Stats.h"
+#include "TestMode.h"
 
 namespace {
 
@@ -37,6 +38,13 @@ namespace {
             break;
         case SKSE::MessagingInterface::kDataLoaded:
             logs::info("Data files loaded; plugin remains active.");
+            if (WorkerSpinLockFix::Config::Get().test_mode_enabled) {
+                logs::warn(
+                    "[TEST] test_mode is ENABLED in config. Launching "
+                    "synthetic AB-BA validation harness. Disable "
+                    "test_mode in WorkerSpinLockFix.toml for normal play.");
+                WorkerSpinLockFix::TestMode::Run();
+            }
             break;
         default:
             break;
@@ -80,6 +88,9 @@ extern "C" [[maybe_unused]] __declspec(dllexport) bool SKSEAPI SKSEPlugin_Load(
         msg->RegisterListener(OnSkseMessage);
     }
 
-    logs::info("WorkerSpinLockFix loaded successfully. Hooks active.");
+    logs::info(
+        "WorkerSpinLockFix loaded successfully. Surgical AcquireHook "
+        "(LockA/LockB only) + WaitGraph + Breaker + Reaper backstop "
+        "active.");
     return true;
 }

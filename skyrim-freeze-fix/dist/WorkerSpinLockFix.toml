@@ -9,23 +9,104 @@
 
 [plugin]
 # Master kill-switch. If false, the plugin loads but does NOT install
-# hooks. Use this to A/B test without rebuilding or removing the DLL.
+# the entry-point hook or the reaper. Use this to A/B test without
+# rebuilding or removing the DLL.
 enabled = true
 
 [log]
-# Emit a one-line WARN entry whenever a hook waited at least this many
-# milliseconds before entering its serialized section. 0 disables the
-# warning.
-#
-# Default 1 ms = "any visible blocking, even on otherwise idle hardware".
-# If your install genuinely contends, raise to 5 or 10 to reduce log noise.
-contention_warn_ms = 1
-
-# How often the plugin emits a one-line counter dump for each hooked
-# function. 0 disables the periodic dump entirely.
+# How often the plugin emits a one-line counter dump for the wait-graph
+# detector and reaper. 0 disables the periodic dump entirely.
 stats_interval_s = 60
 
-# Trace-level logging of every hook entry/exit. SPAMMY. Off by default.
-# Only flip on for short controlled experiments where you need to see
-# the call cadence.
-trace_each_call = false
+[acquire_hook]
+# Emergency kill-switch for the entry-point hook on BSSpinLock::Acquire.
+# If false, the hook is NOT installed and the plugin runs reaper-only.
+# Set to false if any AcquireHook-class regression (hot-path overhead,
+# prologue collision with another mod, etc.) makes the game unplayable
+# without rebuilding or removing the DLL.
+enabled = true
+
+[breaker]
+# When the surgical hook detects a confirmed AB-BA cycle on the two
+# engine BSSpinLocks the plugin watches, the breaker force-releases one
+# of them via CAS so the spinning thread can proceed. The thread that
+# THOUGHT it owned the released lock keeps running its critical section
+# without protection until it next releases; this is acceptable because
+# the alternative is a permanent freeze and the engine's invariants on
+# this critical section appear robust to brief unguarded execution
+# (no save corruption observed in vanilla Skyrim where the same race
+# happens transiently).
+#
+# Set this to false to revert to detect-only diagnostics (logs cycles,
+# never breaks).
+break_enabled = true
+
+# Wall-clock duration (milliseconds) a cycle topology must remain
+# observable before the breaker will force-release a lock. The first
+# thread to detect a cycle claims the confirmation flow, sleeps this
+# long, then re-runs WaitGraph::VerifyCycleStillPresent. If the cycle
+# has self-resolved during the window the breaker stands down; if it
+# is still present the lock is force-released. A short window is fine
+# because a true deadlock is observed thousands of times per
+# millisecond, while a transient near-cycle resolves itself in
+# microseconds.
+#
+# Set to 0 to break on first detection without a wait (not recommended:
+# any near-cycle that the engine would have resolved on its own gets
+# broken anyway).
+confirmation_window_ms = 2
+
+# If true, the first observation of any new cycle signature, every
+# confirmation crossing, and every break attempt (success or race) are
+# logged. Recommended on so any break that actually fires can be
+# audited from the log.
+log_cycle_events = true
+
+[reaper]
+# Stale-owner reaper, retained as a safety net for cases the entry-
+# point hook does not see (threads that died still holding a lock,
+# indirect dispatches the hook never observes). Detects only stale-
+# owner patterns (owner thread is dead). The surgical AB-BA breaker
+# handles live-owner cycles directly.
+#
+# DISABLED by default: the surgical hook is sufficient for the
+# documented engine bug, and the reaper is the only piece of the
+# plugin that suspends engine threads + makes Psapi calls + allocates
+# from those code paths, so it is also the only piece that can
+# plausibly cause a load-time hang on heavy modlists. Re-enable
+# manually if you want the stale-owner backstop in addition to the
+# surgical hook.
+enabled = false
+
+# Reaper poll interval (milliseconds). Stale-owner deadlocks last
+# forever, so long latency between scans is acceptable; the steady-
+# state cost of a full thread enumeration + per-thread
+# SuspendThread/GetThreadContext at this interval is negligible.
+interval_ms = 30000
+
+[test_mode]
+# Synthetic AB-BA validation harness.
+#
+# When enabled, after Skyrim's data files finish loading the plugin
+# spawns two worker threads that deliberately AB-BA two heap-allocated
+# test BSSpinLocks via the real BSSpinLock::Acquire (id 12210). The two
+# test locks are routed through the surgical filter just like the
+# engine BSSpinLocks; the breaker's confirmation flow detects the
+# cycle, sleeps confirmation_window_ms, verifies the cycle is still
+# present, and force-releases one of the test locks. Both worker
+# threads then complete and the log emits:
+#
+#   [TEST] SUCCESS - both workers completed. The breaker detected the
+#   synthetic AB-BA, confirmed it via the time-based flow, and force-
+#   released one test lock. End-to-end cycle break is proven.
+#
+# If the breaker fails to fire within 10 seconds the harness logs
+# [TEST] FAILURE and manually clears the test locks so the workers can
+# drain.
+#
+# The test does NOT touch the engine's BSSpinLocks. It is completely
+# isolated and safe. Engine state is never modified.
+#
+# Default: false. Enable, restart the game once, observe the result,
+# then set back to false for normal play.
+enabled = false

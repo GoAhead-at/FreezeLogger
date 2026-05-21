@@ -1,8 +1,8 @@
 cmake_minimum_required(VERSION 3.26)
 
 project(WorkerSpinLockFix
-    VERSION       0.13.0
-    DESCRIPTION   "Approach G narrowed: serialise id 19369 unconditionally and id 40706 ONLY when this+0x150 resolves to the global LockB. Per-object id 40706 instances pass through unchanged. Reaper retained as a safety net."
+    VERSION       1.0.0
+    DESCRIPTION   "SKSE plugin for Skyrim SE 1.5.97 that breaks an AB-BA spinlock inversion in the engine's worker dispatcher at runtime. A surgical inline hook on BSSpinLock::Acquire (id 12210) builds a per-thread wait-for graph for two specific engine BSSpinLock globals; on a confirmed cycle the offending lock's state field is force-released via InterlockedCompareExchange so the spinning thread can proceed."
     LANGUAGES     CXX
 )
 
@@ -13,6 +13,7 @@ set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
 find_package(CommonLibSSE  CONFIG REQUIRED)
 find_package(tomlplusplus  CONFIG REQUIRED)
+find_package(safetyhook    CONFIG REQUIRED)
 
 set(SOURCES
     src/main.cpp
@@ -20,6 +21,11 @@ set(SOURCES
     src/Logger.cpp
     src/Hooks.cpp
     src/Stats.cpp
+    src/AcquireHook.cpp
+    src/WaitGraph.cpp
+    src/Breaker.cpp
+    src/Reaper.cpp
+    src/TestMode.cpp
 )
 
 set(HEADERS
@@ -28,6 +34,11 @@ set(HEADERS
     src/Logger.h
     src/Hooks.h
     src/Stats.h
+    src/AcquireHook.h
+    src/WaitGraph.h
+    src/Breaker.h
+    src/Reaper.h
+    src/TestMode.h
 )
 
 add_commonlibsse_plugin(${PROJECT_NAME}
@@ -47,6 +58,7 @@ target_precompile_headers(${PROJECT_NAME}
 target_link_libraries(${PROJECT_NAME}
     PRIVATE
         tomlplusplus::tomlplusplus
+        safetyhook::safetyhook
 )
 
 target_compile_definitions(${PROJECT_NAME}
@@ -69,6 +81,7 @@ if(MSVC)
         /EHsc
         /MP
         /Zi
+        /wd4324  # struct padded due to alignment specifier (intentional)
     )
     target_link_options(${PROJECT_NAME} PRIVATE
         /DEBUG:FULL

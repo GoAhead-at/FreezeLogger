@@ -50,22 +50,46 @@ namespace WorkerSpinLockFix::Config {
 
             g_settings.enabled =
                 tbl["plugin"]["enabled"].value_or(g_settings.enabled);
-            g_settings.contention_warn_ms = static_cast<std::uint32_t>(
-                tbl["log"]["contention_warn_ms"].value_or<std::int64_t>(
-                    g_settings.contention_warn_ms));
             g_settings.stats_interval_s = static_cast<std::uint32_t>(
                 tbl["log"]["stats_interval_s"].value_or<std::int64_t>(
                     g_settings.stats_interval_s));
-            g_settings.trace_each_call =
-                tbl["log"]["trace_each_call"].value_or(g_settings.trace_each_call);
 
-            logs::info("Config loaded from {}: enabled={}, contention_warn_ms={}, "
-                       "stats_interval_s={}, trace_each_call={}",
+            g_settings.acquire_hook_enabled =
+                tbl["acquire_hook"]["enabled"].value_or(g_settings.acquire_hook_enabled);
+
+            g_settings.break_enabled =
+                tbl["breaker"]["break_enabled"].value_or(g_settings.break_enabled);
+            g_settings.confirmation_window_ms = static_cast<std::uint32_t>(
+                tbl["breaker"]["confirmation_window_ms"].value_or<std::int64_t>(
+                    g_settings.confirmation_window_ms));
+            g_settings.log_cycle_events =
+                tbl["breaker"]["log_cycle_events"].value_or(g_settings.log_cycle_events);
+
+            g_settings.reaper_enabled =
+                tbl["reaper"]["enabled"].value_or(g_settings.reaper_enabled);
+            g_settings.reaper_interval_ms = static_cast<std::uint32_t>(
+                tbl["reaper"]["interval_ms"].value_or<std::int64_t>(
+                    g_settings.reaper_interval_ms));
+
+            g_settings.test_mode_enabled =
+                tbl["test_mode"]["enabled"].value_or(g_settings.test_mode_enabled);
+
+            logs::info(
+                "Config loaded from {}: enabled={}, stats_interval_s={}, "
+                "acquire_hook_enabled={}, break_enabled={}, "
+                "confirmation_window_ms={}, log_cycle_events={}, "
+                "reaper_enabled={}, reaper_interval_ms={}, "
+                "test_mode_enabled={}",
                 path.string(),
                 g_settings.enabled,
-                g_settings.contention_warn_ms,
                 g_settings.stats_interval_s,
-                g_settings.trace_each_call);
+                g_settings.acquire_hook_enabled,
+                g_settings.break_enabled,
+                g_settings.confirmation_window_ms,
+                g_settings.log_cycle_events,
+                g_settings.reaper_enabled,
+                g_settings.reaper_interval_ms,
+                g_settings.test_mode_enabled);
         }
         catch (const toml::parse_error& e) {
             logs::warn("Config parse error at {}: {} - using built-in defaults.",
