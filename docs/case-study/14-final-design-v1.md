@@ -1,7 +1,13 @@
 # 14 - Final Design and Outcome (WorkerSpinLockFix v1.0)
 
 **Date:** 2026-05-21
-**Status:** Implemented and validated. v1.0.0 ships the design.
+**Status:** Implemented and validated. v1.0.0 shipped this design
+on 2026-05-21. Superseded as the primary fix on 2026-05-22 by the
+v2.0 structural fix (see [`22-v2-phase4-1-cycle-hub-characterisation.md`](22-v2-phase4-1-cycle-hub-characterisation.md)
+and [`23-v2-release.md`](23-v2-release.md)). The architecture
+documented here is **still installed** in v2.0.0 as defence-in-depth
+beneath the structural fix - the runtime breaker remains the
+backstop for cycle paths the structural fix does not preempt.
 **Predecessor docs:**
 - `06-root-cause.md` — AB-BA evidence between LockA and LockB.
 - `11-worker-spinlockfix-retrospective.md` — failure modes of the
@@ -9,11 +15,22 @@
 - `12-engine-fix-mod-audit.md` — `safetyhook` adoption rationale.
 - `13-rethought-solution.md` — the redesign proposal that became
   this document's implementation.
+**Successor docs:**
+- `15-v2-structural-strategy.md` — strategy that drove the v2.0
+  work.
+- `16` through `22` — Phase 1 / 1.5 / 2 / 3 / 3.5 / 4-prep / 4.1
+  outputs that produced the structural fix.
+- `23-v2-release.md` — v2.0.0 release note and what changed in
+  the plugin between v1.0.0 and v2.0.0.
 
-This document records the final architecture as actually shipped, the
-two regressions discovered during bring-up that are not in the
+This document records the v1.0 architecture as actually shipped,
+the two regressions discovered during bring-up that are not in the
 retrospective, and the synthetic test that proves the breaker works
-end-to-end without waiting for a real engine cycle.
+end-to-end without waiting for a real engine cycle. The v1.0
+architecture below is also one of the two layers shipped in v2.0.0
+(the runtime-breaker layer); none of the §1-§7 content has been
+revised post-v1.0 - the v2.0 structural fix layered on top is
+documented separately in docs 22 and 23.
 
 ---
 

@@ -1,7 +1,12 @@
 # 15 - v2.0 Structural Strategy: Eliminating the AB-BA at the Source
 
 **Date:** 2026-05-22
-**Status:** Strategy proposal. Implementation has not yet started.
+**Status:** Strategy executed. Implementation shipped in
+WorkerSpinLockFix v2.0.0 on 2026-05-22. The fix that actually
+shipped (option **C5**, single-point cycle-hub deferral) was not in
+the four options enumerated below; it emerged from Phase 4 prep
+once `id 36016` was identified as the cycle hub. See the addendum
+at the bottom of this document and doc 22 for the as-built design.
 **Predecessor docs:**
 - [`06-root-cause.md`](06-root-cause.md) — The AB-BA evidence between LockA and LockB.
 - [`08-mitigation.md`](08-mitigation.md) — Original five-option mitigation analysis.
@@ -9,6 +14,14 @@
 - [`12-engine-fix-mod-audit.md`](12-engine-fix-mod-audit.md) — Audit of `EngineFixesSkyrim64` and `po3-Tweaks`; `safetyhook` adoption rationale; `form_caching` precedent.
 - [`13-rethought-solution.md`](13-rethought-solution.md) — Reactive runtime fix proposal that became v1.0.
 - [`14-final-design-v1.md`](14-final-design-v1.md) — v1.0 final architecture and outcome.
+**Successor docs (executed plan):**
+- [`16-v2-phase1-singletons.md`](16-v2-phase1-singletons.md) - Phase 1 outcome (LockA/LockB are standalone globals, not singleton fields).
+- [`17-v2-phase1-5-findings.md`](17-v2-phase1-5-findings.md) - Phase 1.5 outcome (LockB is `RE::ProcessLists`'s lock; `id 40706` dropped from acquirer set).
+- [`18-v2-phase2-cycle-paths.md`](18-v2-phase2-cycle-paths.md) - Phase 2 outcome (back-edges located via vtable expansion).
+- [`19-v2-phase3-mutations-and-form-types.md`](19-v2-phase3-mutations-and-form-types.md) - Phase 3 outcome (mutation surface quantified; cycle drivers identified).
+- [`20-v2-phase3-5-findings.md`](20-v2-phase3-5-findings.md) - Phase 3.5 corrections (naive C2 re-forms cycle through marshal queue; C1 is load-bearing).
+- [`21-v2-phase4-prep-dispatch-decode.md`](21-v2-phase4-prep-dispatch-decode.md) - Phase 4 prep (`id 40335` reclassified as `BSSpinLock::Unlock`; `id 36016` identified as cycle hub; **option C5 introduced**).
+- [`22-v2-phase4-1-cycle-hub-characterisation.md`](22-v2-phase4-1-cycle-hub-characterisation.md) - Phase 4.1 outcome and final C5 design (three inline hooks, thread-local depth + queue).
 
 This document defines the strategy for **WorkerSpinLockFix v2.0** — a structural fix that removes the AB-BA inversion at its source rather than detecting and breaking cycles at runtime. v1.0 is retained as a defence-in-depth safety net beneath v2.0.
 
@@ -409,3 +422,50 @@ These are not blockers but should be answered as analysis proceeds:
 After step 5 is reviewed and signed off, Phase 2 begins.
 
 The work is sequenced so that **at every checkpoint the project can stop cleanly with a documented partial result** rather than producing throwaway artifacts. This is in deliberate contrast to the v0.1–v0.5 retracted iterations, which were code-first and ended up as discarded branches.
+
+---
+
+## Appendix - As-built (added 2026-05-22, post-implementation)
+
+### A.1 What actually shipped
+
+The v2.0.0 release implements **option C5**, which was not in the four-option list above. C5 emerged from Phase 4 prep (doc 21 §6) once `id 36016` was identified as the cycle hub through which both directions of the AB-BA flow converge.
+
+The C5 design (final form documented in doc 22 §6) consists of three `safetyhook::create_inline` hooks plus per-thread state:
+
+1. **Wrap `id 19369`** (LockA acquirer): `++tl_lockA_depth` on entry, `unsafe_call` original, `--tl_lockA_depth` on return, `DrainDeferredOnExit()` when depth reaches 0.
+2. **Gate `id 40333`** (`AddToTempChangeList`): if `tl_lockA_depth > 0`, push `(kAdd, pl, actor)` onto thread-local `std::vector<DeferredCall> tl_deferred` and return; otherwise tail-call the original.
+3. **Gate `id 40334`** (`RemoveFromTempChangeList`): same shape as `id 40333`'s gate.
+
+`tl_deferred` is reserved up-front (8 entries) so the hot path is allocation-free.
+
+This breaks the LA->LB edge structurally - LockB cannot be acquired while LockA is held. The LB->LA edge (`id 40285` -> `id 36614` -> `id 38413` -> `id 19369`) is left untouched: with one direction of the cycle eliminated, the cycle cannot close.
+
+### A.2 Why C5 over C1/C2/C3/C4
+
+| Option | Status | Reason |
+|---|---|---|
+| C1 (lock-free `ProcessLists` rewrite) | Rejected | Doc 22 §1.1: would require rewriting four functions (`id 40285`, `id 40333`, `id 40334`, `id 40335`) and replacing the bucket array with a lock-free structure. Patch surface ~600+ LOC. C5 achieves the same outcome in ~120 LOC. |
+| C2a (LockA elimination + concurrent `id 19369`) | Reserved as fallback | Doc 20 §3.2: viable now that `0x2eff95c` is known function-local to `id 19369` (replaceable with `thread_local`). Reserved for if LockA contention is measurable after C5. |
+| C2b (LockA scope narrowing) | Reserved as defence-in-depth | Doc 20 §3.3: independently sufficient to break LA->LB. C5 supersedes it but C2b can be added if cycle paths beyond the C5 hooks are observed. |
+| C3 (comprehensive lock-order enforcement) | Rejected | Doc 11: function-entry serialisation produced new lock-ordering deadlocks against the heap `CRITICAL_SECTION` in every previous attempt. |
+| C4 (wholesale function replacement) | Rejected | Implies reimplementing `id 19369`'s 0x6a0-byte body. Doc 19 §3 traces show that body to be a vtable-driven traverser into form code; replacing it without breaking observable behaviour is impractical. |
+| **C5 (cycle-hub deferral)** | **Shipped** | Smallest patch surface (~120 LOC). Mutation-safe (doc 22 §4 correctness audit). Per-thread, allocation-free hot path. Layers cleanly on top of v1.0's runtime breaker without modifying it. |
+
+### A.3 Predecessor doc corrections that landed during execution
+
+- **§4 Phase 1 hypothesis (singleton-of-class)**: disproven by Phase 1 findings (doc 16). Both LockA and LockB are standalone `.data` globals with no host class.
+- **§2 acquirer set (mention of `id 40706`)**: corrected by Phase 1.5 (doc 17). `id 40706` takes a per-instance lock at `[obj+0x150]` of a different class.
+- **§7 C2 framing ("naive marshalling breaks the cycle")**: corrected by Phase 3.5 (doc 20). Naive C2 re-forms the cycle through the marshal queue; C2 needs either lock-scope narrowing (C2b) or LockA elimination (C2a) to be sufficient.
+- **`id 40335` framing (mentioned in §2 as a LockB acquirer)**: corrected by Phase 4 prep (doc 21). `id 40335` is `BSSpinLock::Unlock` for LockB. The LockB acquirer set is `{id 40285, id 40333, id 40334}`.
+
+### A.4 Exit criteria status (§11)
+
+1. ✅ **Phase 1-3 deliverables produced** as docs 16-22 (and the corrections in 17/20/21 that revised the original hypotheses).
+2. ✅ **Phase 4 implementation shipping** as `Phase4Defer` module in WorkerSpinLockFix v2.0.0.
+3. ⚠ **Synthetic test coverage**: the v0.19.0 harness validates the v1.0 runtime breaker. A C5-specific harness exercising the LA->LB defer/drain path is pending (todo `p4-2-impl-testharness`).
+4. ⚠ **Soak-test coverage** (≥ 100 hours): pending in-game smoke test (todo `p4-2-impl-smoketest`).
+5. ✅ **Documentation updated**: README + design.md + this addendum + new doc 23 release note.
+6. ⚠ **Upstream-readiness**: the structural fix is structurally compatible with `EngineFixesSkyrim64`'s `safetyhook` adoption. No upstream submission attempt has been made.
+
+The two ⚠ items are tracked in the outstanding-work list at the bottom of doc 23.

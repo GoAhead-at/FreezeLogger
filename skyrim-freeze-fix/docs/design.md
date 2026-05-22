@@ -1,15 +1,35 @@
 # WorkerSpinLockFix - design
 
 This document describes the architecture of the `WorkerSpinLockFix`
-SKSE plugin: what each module does, why it is shaped that way, and
-the invariants that hold across the whole system.
+SKSE plugin **as of v2.0.0**: what each module does, why it is
+shaped that way, and the invariants that hold across the whole
+system.
+
+The plugin layers two independent fixes for the same engine bug:
+
+1. **Layer 1 - Structural fix (`Phase4Defer`, v2.0).** Three inline
+   hooks defer the LockB acquirers `id 40333` /
+   `id 40334` whenever the current thread is inside the LockA
+   acquirer `id 19369`. The deferred calls drain on the same
+   thread when LockA is released. The AB-BA cycle cannot form.
+2. **Layer 2 - Runtime breaker (`AcquireHook` + `WaitGraph` +
+   `Breaker`, v1.0).** A surgical inline hook on
+   `BSSpinLock::Acquire (id 12210)` detects cycles that form
+   anyway (cycle paths the structural fix misses) and force-
+   releases one lock so the spinning thread proceeds.
+
+Layer 1 is the primary fix. Layer 2 is defence-in-depth: with the
+structural fix active and healthy it should never fire.
 
 For the engine bug being fixed see
 [`../../docs/case-study/06-root-cause.md`](../../docs/case-study/06-root-cause.md).
-For the engineering lessons that drove this design (in particular the
-constraints on what may and may not happen inside the
-`BSSpinLock::Acquire` slow path) see
+For the engineering lessons that drove the v1.0 architecture (in
+particular the constraints on what may and may not happen inside
+the `BSSpinLock::Acquire` slow path) see
 [`../../docs/case-study/11-worker-spinlockfix-retrospective.md`](../../docs/case-study/11-worker-spinlockfix-retrospective.md).
+For the v2.0 cycle-hub characterisation that produced the
+structural fix see
+[`../../docs/case-study/22-v2-phase4-1-cycle-hub-characterisation.md`](../../docs/case-study/22-v2-phase4-1-cycle-hub-characterisation.md).
 
 ---
 
@@ -18,9 +38,27 @@ constraints on what may and may not happen inside the
 Skyrim SE 1.5.97 contains a vanilla AB-BA inversion between two
 static `BSSpinLock` globals in the worker dispatcher:
 
-- `LockA` at `SkyrimSE+0x2eff8e0`, taken inside `id 19369`.
-- `LockB` at `SkyrimSE+0x2f3b8e8`, taken inside `id 40706`
-  (via `[arg+0x150]`) and inside `id 40333`.
+- `LockA` at `SkyrimSE+0x2eff8e0`, taken inside `id 19369` (the
+  LockA acquirer).
+- `LockB` at `SkyrimSE+0x2f3b8e8`, taken inside three non-virtual
+  `RE::ProcessLists` methods:
+  - `id 40285` - `TransferBetweenTempChangeLists`-style traverser
+    that dispatches into form code at six vtable slots.
+  - `id 40333` - `AddToTempChangeList`. Acquires LockB, appends
+    the actor to a bucket array, sets `kInTempChangeList` (bit 9)
+    of `Actor::boolBits` at `[actor+0xe0]`.
+  - `id 40334` - `RemoveFromTempChangeList`. Acquires LockB, finds
+    and removes the actor, clears `kInTempChangeList`, clears the
+    process-private global at `0x2f44db0`.
+
+Phase 1 misclassified `id 40706` as a LockB acquirer; Phase 1.5
+(see [`../../docs/case-study/17-v2-phase1-5-findings.md`](../../docs/case-study/17-v2-phase1-5-findings.md))
+established that `id 40706` takes a per-instance lock at
+`[obj+0x150]` of a different class. Phase 4 prep (see
+[`../../docs/case-study/21-v2-phase4-prep-dispatch-decode.md`](../../docs/case-study/21-v2-phase4-prep-dispatch-decode.md))
+reclassified `id 40335` as `BSSpinLock::Unlock` for LockB, not an
+acquirer. The acquirer set is exactly `{id 40285, id 40333,
+id 40334}`.
 
 Two worker threads can each hold one lock and spin on the other.
 Once both threads are caught in the cycle, neither makes progress,
@@ -36,8 +74,53 @@ all with the same two-lock topology.
 
 ## 2. Solution shape
 
-The plugin is **detect-and-break at the spinlock level**, not at the
-engine-function level:
+### 2.1 Layer 1 - Structural fix (Phase4Defer)
+
+`Phase4Defer` installs three inline hooks via
+`safetyhook::create_inline`:
+
+```
+                 thread enters id 19369 (LockA acquirer)
+                 ─────────────────────────────────────────
+                  ++tl_lockA_depth
+                  unsafe_call original
+                  --tl_lockA_depth
+                  if (tl_lockA_depth == 0) DrainDeferred()
+
+
+                 thread enters id 40333 / id 40334
+                 (LockB acquirers, dispatched into from
+                 inside id 19369 via id 36016 cycle hub)
+                 ─────────────────────────────────────────
+                  if (tl_lockA_depth > 0) {
+                      tl_deferred.push_back({kind, pl, actor});
+                      return;            // skip LockB acquire
+                  }
+                  unsafe_call original   // fast path
+```
+
+Per-thread state is a single `int tl_lockA_depth` and a small
+`std::vector<DeferredCall> tl_deferred` reserved up-front so the hot
+path never allocates.
+
+The drain runs on the same thread that originally queued each call,
+so per-thread call ordering is preserved. The drain runs after
+LockA is released, so each replayed `id 40333` / `id 40334` call
+takes LockB normally. The AB-BA cycle - which required *holding*
+LockA *while* taking LockB - is structurally impossible.
+
+The LB->LA direction (`id 40285` -> `id 36614` -> `id 38413` ->
+`id 19369`) is intentionally left untouched. Once the LA->LB edge
+is broken, the cycle cannot close in either direction.
+
+A correctness audit (doc 22 §4) confirmed that the immediate
+followup at each LockB-acquirer call site (`id 36016 +0xdcb`,
+`id 19372 +0x606`, `id 36016 +0xfa3`) does **not** read fields the
+deferred functions mutate. Defer-when-LockA-held is mutation-safe.
+
+### 2.2 Layer 2 - Runtime breaker
+
+The plugin retains v1.0's **detect-and-break at the spinlock level**:
 
 ```
                                   ┌──────────────┐
@@ -74,19 +157,81 @@ engine-function level:
 We did not pursue function-entry serialisation (gating the engine
 functions that take LockA/LockB behind a plugin mutex) because every
 attempt at that produced a new lock-ordering deadlock against the
-heap `CRITICAL_SECTION` or against the engine's own `BSSpinLock`s –
+heap `CRITICAL_SECTION` or against the engine's own `BSSpinLock`s -
 see `11-worker-spinlockfix-retrospective.md` for the full set of
 lessons.
 
-The current design is **invisible in normal play** (one pointer
-compare per `BSSpinLock::Acquire` for non-target locks) and acts only
-when a real AB-BA cycle is observed, confirmed, and re-verified.
+The Layer 2 design is **invisible in normal play** (one pointer
+compare per `BSSpinLock::Acquire` for non-target locks) and acts
+only when a real AB-BA cycle is observed, confirmed, and
+re-verified. The Layer 1 design is similarly cheap: one
+thread-local read per `id 40333` / `id 40334` entry on the common
+(pass-through) path, plus one increment/decrement per `id 19369`
+entry/exit.
 
 ---
 
 ## 3. Module breakdown
 
-### 3.1. `AcquireHook`
+### 3.1. `Phase4Defer` (v2.0 structural fix)
+
+The Layer 1 module. Three `safetyhook::create_inline` hooks plus a
+pair of thread-local globals. RVAs are resolved at install time via
+`REL::Relocation<>{REL::ID(N)}`, the same pattern `AcquireHook`
+uses.
+
+```cpp
+thread_local int tl_lockA_depth = 0;
+thread_local std::vector<DeferredCall> tl_deferred;   // reserved 8
+
+void __fastcall HookedLockAAcquirer(void* rcx, void* rdx,
+                                    std::uint8_t r8b,
+                                    std::uintptr_t r9) {
+    ++tl_lockA_depth;
+    g_hook_lockA_acquirer.unsafe_call<void>(rcx, rdx, r8b, r9);
+    if (--tl_lockA_depth == 0) DrainDeferredOnExit();
+}
+
+void __fastcall HookedAddToTempChangeList(void* pl, void* actor) {
+    if (tl_lockA_depth > 0) {
+        tl_deferred.push_back({DeferKind::kAdd, pl, actor});
+        Stats::OnPhase4Queued();
+        return;
+    }
+    Stats::OnPhase4PassThrough();
+    g_hook_add.unsafe_call<void>(pl, actor);
+}
+
+void __fastcall HookedRemoveFromTempChangeList(void* pl,
+                                               void* actor) {
+    if (tl_lockA_depth > 0) {
+        tl_deferred.push_back({DeferKind::kRemove, pl, actor});
+        Stats::OnPhase4Queued();
+        return;
+    }
+    Stats::OnPhase4PassThrough();
+    g_hook_remove.unsafe_call<void>(pl, actor);
+}
+```
+
+`HookedLockAAcquirer`'s 4-argument `__fastcall` signature matches
+`id 19369`'s observed prologue (`rcx`, `rdx`, `r8b`, `r9`). The
+hook function preserves all four registers across the wrapped call
+without modification.
+
+`DrainDeferredOnExit` walks `tl_deferred` to-completion replaying
+each `(kind, pl, actor)` triple via the original trampoline
+pointer. The drain happens on the same thread as the original
+queueing, so per-thread call ordering is preserved.
+
+The reserve-up-front policy on `tl_deferred` (8 entries by default,
+which is well above any observed in-cycle queue depth) keeps the
+hot path allocation-free. If the queue grows past the reserve the
+underlying `std::vector` reallocates - this is observable in the
+debugger via heap activity but does not produce a hot-path
+allocation under normal load.
+
+### 3.2. `AcquireHook`
 
 Installs a single `safetyhook::create_inline` hook on
 `BSSpinLock::Acquire` (`id 12210`).
@@ -125,7 +270,7 @@ would serialise every acquire across all threads. We never
 uninstall the hook at runtime, so we cannot race with installation
 or destruction either way.
 
-### 3.2. `WaitGraph`
+### 3.3. `WaitGraph`
 
 A fixed-size, lock-free wait-for graph. Each thread that enters the
 slow path claims one of 64 cache-aligned slots (lazily, from a
@@ -152,7 +297,7 @@ confirmation window to validate the cycle has not self-resolved.
 The graph is invisible to threads that never enter the slow path –
 fast-path acquires never touch any of this storage.
 
-### 3.3. `Breaker`
+### 3.4. `Breaker`
 
 Drives the confirmation gate and (when enabled) the force-release.
 
@@ -183,7 +328,7 @@ clean 2-thread AB-BA, where each thread enters
 trampoline's spin loop. Observation counting alone could not
 confirm such a cycle because only one observation ever arrives.
 
-### 3.4. `Reaper`
+### 3.5. `Reaper`
 
 Optional stale-owner backstop. Disabled by default. Periodically:
 
@@ -206,7 +351,7 @@ makes Psapi calls, or allocates from those code paths, so it is
 also the only part that can plausibly cause load-time stalls on
 heavy modlists. That is why it is off by default.
 
-### 3.5. `TestMode`
+### 3.6. `TestMode`
 
 Optional synthetic AB-BA validation harness. Disabled by default.
 When enabled, after `kDataLoaded` the plugin spawns two threads that
@@ -299,8 +444,12 @@ the outcome (both threads drain shortly after the release).
      `AcquireHook::ResolveLockPointers()` unconditionally (the
      reaper depends on the spin-retry RVA even when the entry-point
      hook is disabled).
-   - `AcquireHook::Install()` (entry-point inline hook), gated by
-     `acquire_hook.enabled`.
+   - `AcquireHook::Install()` (Layer 2 entry-point inline hook),
+     gated by `acquire_hook.enabled`.
+   - `Phase4Defer::Install()` (Layer 1 structural fix: three
+     inline hooks on `id 19369` / `id 40333` / `id 40334`), gated
+     by `phase4_defer.enabled`. Fail-soft: a `Phase4Defer` install
+     failure is logged but leaves the v1.0 runtime breaker active.
    - `Reaper::Install()` if `reaper.enabled = true`.
 6. `Stats::StartPeriodicDump()`.
 7. Register the SKSE message listener.
@@ -315,7 +464,8 @@ the outcome (both threads drain shortly after the release).
 
 Every `log.stats_interval_s` seconds, one info-level line with all
 counters (acquire-slow, cycles observed/confirmed, breaks done/
-raced/suppressed, plus reaper counters).
+raced/suppressed, `Phase4Defer` queued/drained/passthrough, plus
+reaper counters).
 
 ---
 
@@ -324,26 +474,35 @@ raced/suppressed, plus reaper counters).
 On a healthy install:
 
 1. Splash and main-menu come up cleanly.
-2. The plugin's banner appears in the log followed by either an
-   `AcquireHook` install line or a config-driven kill-switch
-   message.
-3. During gameplay `acq_slow` rises steadily (a few hundred per
-   minute under load) reflecting normal worker-pool activity on
-   LockA/LockB.
-4. `cycles_observed`, `cycles_confirmed`, and `breaks_done` are
-   all `0` unless the AB-BA race actually fires.
-5. If the race does fire, the next stats line shows
-   `cycles_observed=1, cycles_confirmed=1, breaks_done=1` and the
-   game keeps running. A full `[CYCLE] / [BREAK]` block is logged
-   when `log_cycle_events = true`.
-6. No game lag, no splash freeze, no save corruption.
+2. The plugin's banner appears in the log; the
+   `phase4_active=true` flag confirms Layer 1 is armed and the
+   `acquire_hook_active=true` flag confirms Layer 2 is armed.
+3. During gameplay `acq_slow` and `phase4_passthrough` rise
+   steadily (a few hundred per minute under load) reflecting
+   normal worker-pool activity on LockA/LockB and pass-through
+   `id 40333` / `id 40334` calls outside `id 19369`.
+4. `phase4_queued` rises whenever the LA->LB cycle would have
+   fired and was preempted. `phase4_drained` matches
+   `phase4_queued` over long horizons (every queued call is
+   eventually replayed on the same thread).
+5. `cycles_observed`, `cycles_confirmed`, and `breaks_done` stay
+   at `0`: the structural fix preempts every cycle path the
+   investigation identified, so the runtime breaker has nothing
+   to break.
+6. If the runtime breaker does fire (`breaks_done > 0`), that
+   indicates a cycle path the structural fix missed and the
+   runtime breaker still caught it - the game keeps running but
+   the case is worth investigating to widen the structural fix.
+7. No game lag, no splash freeze, no save corruption.
 
 If something other than this is observed, the recovery path is the
 emergency kill-switch chain:
 
-- `acquire_hook.enabled = false` → reaper-only (or completely idle
-  if the reaper is also off).
-- `plugin.enabled = false` → plugin loads but installs nothing.
-- Remove the DLL → engine runs entirely unmodified.
+- `phase4_defer.enabled = false` -> Layer 1 off, Layer 2 still
+  installed (back to v1.0 behaviour).
+- `acquire_hook.enabled = false` -> Layer 2 off (reaper-only or
+  completely idle if the reaper is also off).
+- `plugin.enabled = false` -> plugin loads but installs nothing.
+- Remove the DLL -> engine runs entirely unmodified.
 
 Each of these is a TOML edit + game restart, no rebuild needed.

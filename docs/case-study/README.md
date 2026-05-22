@@ -1,12 +1,16 @@
 # Skyrim SE 1.5.97 Hard-Freeze Investigation - Case Study
 
 **Project:** FreezeLogger SKSE Plugin (+ WorkerSpinLockFix companion)
-**Period:** 2026-05-14 to 2026-05-22 (Phase 3: 2026-05-22)
+**Period:** 2026-05-14 to 2026-05-22 (v2.0 RE + structural fix:
+2026-05-22)
 **Modlist:** Nolvus Awakening (Skyrim SE 1.5.97)
-**Outcome:** Root cause identified (AB-BA spinlock inversion in Skyrim's
-worker dispatcher) and a working runtime fix shipped as
-`WorkerSpinLockFix` v1.0.0. Forward strategy for a structural fix
-(`v2.0`) defined in document 15.
+**Outcome:** Root cause identified (AB-BA spinlock inversion in
+Skyrim's worker dispatcher), a working runtime fix shipped as
+`WorkerSpinLockFix` v1.0.0 on 2026-05-21, and a structural fix
+shipped as `WorkerSpinLockFix` v2.0.0 on 2026-05-22 that preempts
+the cycle before it can form. The v1.0 runtime breaker remains
+installed in v2.0.0 as defence-in-depth. See document 23 for the
+v2.0.0 release note.
 
 This folder contains the long-form case study describing how a custom SKSE
 diagnostics plugin was designed, iterated on across multiple real freezes,
@@ -235,6 +239,18 @@ and ultimately used to localize a deadlock to two specific functions inside
   patch size, and semantic risk; the LB->LA direction is left
   alone (id 40285 / id 36614 / id 38413 unmodified). Phase 4
   implementation checklist included.
+- `23-v2-release.md` - v2.0.0 release note. Records what
+  shipped (`Phase4Defer` module: three inline hooks + per-thread
+  depth counter + per-thread deferred-call queue), what changed
+  in `Config.h/.cpp`, `Hooks.cpp`, `Stats.h/.cpp`, and
+  `WorkerSpinLockFix.toml` between v1.0.0 and v2.0.0, the
+  configuration matrix (Layer 1 + Layer 2 toggle independently),
+  the in-place verification procedure (banner check ->
+  steady-state telemetry -> cycle-preempted signature), and the
+  outstanding work tracked for follow-up (synthetic harness for
+  `Phase4Defer`, in-game smoke test on doc-19 freeze-prone
+  scenarios, optional upstream PR to `EngineFixesSkyrim64`,
+  reactive C5 widening if a missed cycle path is ever observed).
 - `appendix-A-evidence.md` - Raw freeze logs, disassembly excerpts, register
   dumps used as evidence in the main narrative.
 

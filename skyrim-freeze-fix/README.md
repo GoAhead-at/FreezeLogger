@@ -1,24 +1,40 @@
 # WorkerSpinLockFix
 
-SKSE plugin for **Skyrim SE 1.5.97** that breaks a documented AB-BA
-spinlock inversion in the engine's worker dispatcher at runtime. When
-a real cycle forms between the two `BSSpinLock` globals involved, the
-plugin force-releases one of them so the spinning thread can proceed
-and the game keeps running instead of freezing hard.
+SKSE plugin for **Skyrim SE 1.5.97** that fixes a documented AB-BA
+spinlock inversion in the engine's worker dispatcher.
+
+**v2.0.0 (current)** ships a structural fix layered on top of the
+v1.0.0 runtime breaker. Three inline hooks (one wrap on the LockA
+acquirer, two entry-gates on the LockB acquirers) defer LockB
+acquires whenever the current thread is inside the LockA acquirer,
+so the AB-BA cycle simply cannot form. The v1.0.0 runtime breaker
+(surgical hook on `BSSpinLock::Acquire`, per-thread wait-for graph,
+time-based confirmation flow, force-release via
+`InterlockedCompareExchange`) is retained as defence-in-depth: if
+the structural fix misses any cycle path the runtime breaker still
+catches and force-releases.
 
 This is the companion fix plugin for `FreezeLogger`. The bug it
 addresses is documented in
 [`../docs/case-study/06-root-cause.md`](../docs/case-study/06-root-cause.md);
-the design that produces the v1.0.0 plugin is documented in
-[`../docs/case-study/14-final-design-v1.md`](../docs/case-study/14-final-design-v1.md).
+the v1.0 architecture is documented in
+[`../docs/case-study/14-final-design-v1.md`](../docs/case-study/14-final-design-v1.md);
+the v2.0 cycle-hub characterisation and the structural fix design
+are in
+[`../docs/case-study/22-v2-phase4-1-cycle-hub-characterisation.md`](../docs/case-study/22-v2-phase4-1-cycle-hub-characterisation.md).
 
 ## What it does
 
 Skyrim SE 1.5.97 contains a vanilla AB-BA inversion between two static
 `BSSpinLock` globals in the worker dispatcher:
 
-- `LockA` at `SkyrimSE+0x2eff8e0`
-- `LockB` at `SkyrimSE+0x2f3b8e8`
+- `LockA` at `SkyrimSE+0x2eff8e0`, taken inside the LockA acquirer
+  (`id 19369`).
+- `LockB` at `SkyrimSE+0x2f3b8e8`, taken inside three non-virtual
+  ProcessLists methods: `id 40285`
+  (`TransferBetweenTempChangeLists`-style traverser), `id 40333`
+  (`AddToTempChangeList`), `id 40334`
+  (`RemoveFromTempChangeList`).
 
 Two worker threads can hold one lock and spin on the other; once both
 threads are caught in the cycle, neither makes progress, the
@@ -27,11 +43,39 @@ the game freezes. The race is rare per-session but cumulative on long
 play and was reproduced in nine independent freeze captures with
 `FreezeLogger`.
 
-The plugin installs a single inline hook on `BSSpinLock::Acquire`
-(`id 12210`) via `safetyhook::create_inline`. The detour applies a
-**surgical filter**: only acquisitions of LockA or LockB do real work;
-every other `BSSpinLock` pays one pointer compare and a tail-call
-through the lock-free trampoline (~2 ns at 3 GHz).
+The plugin layers two complementary mechanisms.
+
+### Layer 1 - Structural fix (v2.0, primary)
+
+Three additional inline hooks via `safetyhook::create_inline`:
+
+1. **`id 19369` (LockA acquirer) wrap** - increments a thread-local
+   "LockA depth" counter on entry, runs the original, decrements on
+   return, and drains the deferred-call queue when the counter
+   returns to 0.
+2. **`id 40333` (`AddToTempChangeList`) entry-gate** - if the
+   current thread's LockA depth is `> 0`, push `(pl, actor)` onto
+   the thread-local deferred queue and return early. Otherwise
+   tail-call the original.
+3. **`id 40334` (`RemoveFromTempChangeList`) entry-gate** - same
+   shape as `id 40333`'s gate.
+
+The drain at LockA-depth-0 happens on the same thread that originally
+queued the call, so per-thread call ordering is preserved. LockB is
+acquired normally during the drain because LockA is no longer held.
+The AB-BA cycle simply cannot form.
+
+The LB->LA direction (`id 40285` -> `id 36614` -> `id 38413` ->
+`id 19369`) is intentionally left alone: once the LA->LB edge is
+broken, the cycle cannot close.
+
+### Layer 2 - Runtime breaker (v1.0, defence-in-depth)
+
+A single inline hook on `BSSpinLock::Acquire` (`id 12210`) via
+`safetyhook::create_inline`. The detour applies a **surgical filter**:
+only acquisitions of LockA or LockB do real work; every other
+`BSSpinLock` pays one pointer compare and a tail-call through the
+lock-free trampoline (~2 ns at 3 GHz).
 
 When the detour fires for LockA or LockB and the lock is contended,
 the plugin:
@@ -51,11 +95,16 @@ the plugin:
    protection until it next releases; in practice the engine's
    invariants on this section tolerate that.
 
+With the structural fix active and healthy the runtime breaker should
+**never fire** in normal play (`breaks_done` stays at 0). If it does
+fire, that signals a cycle path the structural fix missed and the
+runtime breaker still catches it.
+
 A separate stale-owner reaper acts as an optional backstop for cases
-the entry-point hook cannot observe (threads that died holding a
-lock, indirect dispatches the hook never sees). It is disabled by
-default; the surgical AcquireHook + breaker pipeline is sufficient
-for the documented engine bug.
+neither the entry-point hook nor the structural fix can observe
+(threads that died holding a lock, indirect dispatches no hook sees).
+It is disabled by default; the structural fix + AcquireHook breaker
+pipeline is sufficient for the documented engine bug.
 
 The plugin ships with a **synthetic AB-BA test harness** that can be
 enabled in the TOML to validate the breaker end-to-end on
@@ -83,29 +132,42 @@ Documents/My Games/Skyrim Special Edition/SKSE/WorkerSpinLockFix/WorkerSpinLockF
 contains a banner ending in:
 
 ```
-WorkerSpinLockFix armed. Surgical mode (acquire_hook_active=true, ...).
+WorkerSpinLockFix armed. Surgical mode (acquire_hook_active=true,
+break_enabled=true, confirmation_window_ms=2, phase4_active=true,
+...).
 ```
 
-That is the only line that has to be present; everything else is
-optional telemetry.
+`phase4_active=true` confirms the v2.0 structural fix is armed.
+`acquire_hook_active=true` confirms the v1.0 runtime breaker is
+armed underneath. Either one is sufficient to keep the engine
+running through the AB-BA race; both running together is the
+intended configuration.
+
+That banner is the only line that has to be present; everything else
+is optional telemetry.
 
 ## Configuration
 
 `WorkerSpinLockFix.toml` lives next to the DLL. Key settings:
 
-| Section          | Key                         | Default   | Meaning |
-|------------------|-----------------------------|-----------|---------|
-| `[plugin]`       | `enabled`                   | `true`    | Master kill-switch. `false` loads the plugin idle (no hooks). |
-| `[log]`          | `stats_interval_s`          | `60`      | Periodic counter-dump interval. `0` disables. |
-| `[acquire_hook]` | `enabled`                   | `true`    | Emergency kill-switch for the entry-point hook. |
-| `[breaker]`      | `break_enabled`             | `true`    | If `false`, the breaker logs cycles but never force-releases anything (detect-only). |
-| `[breaker]`      | `confirmation_window_ms`    | `2`       | How long a cycle must remain present before being broken. |
-| `[breaker]`      | `log_cycle_events`          | `true`    | Log every cycle observation, confirmation, and break attempt. |
-| `[reaper]`       | `enabled`                   | `false`   | Stale-owner backstop. Off by default. |
-| `[reaper]`       | `interval_ms`               | `30000`   | Stale-owner scan interval (ms). |
-| `[test_mode]`    | `enabled`                   | `false`   | Synthetic AB-BA validation harness. See below. |
+| Section            | Key                         | Default   | Meaning |
+|--------------------|-----------------------------|-----------|---------|
+| `[plugin]`         | `enabled`                   | `true`    | Master kill-switch. `false` loads the plugin idle (no hooks). |
+| `[log]`            | `stats_interval_s`          | `60`      | Periodic counter-dump interval. `0` disables. |
+| `[phase4_defer]`   | `enabled`                   | `true`    | v2.0 structural fix. If `false`, the LockA/LockB hooks are not installed and only the v1.0 runtime breaker runs. |
+| `[acquire_hook]`   | `enabled`                   | `true`    | v1.0 entry-point hook. Emergency kill-switch. |
+| `[breaker]`        | `break_enabled`             | `true`    | If `false`, the breaker logs cycles but never force-releases anything (detect-only). |
+| `[breaker]`        | `confirmation_window_ms`    | `2`       | How long a cycle must remain present before being broken. |
+| `[breaker]`        | `log_cycle_events`          | `true`    | Log every cycle observation, confirmation, and break attempt. |
+| `[reaper]`         | `enabled`                   | `false`   | Stale-owner backstop. Off by default. |
+| `[reaper]`         | `interval_ms`               | `30000`   | Stale-owner scan interval (ms). |
+| `[test_mode]`      | `enabled`                   | `false`   | Synthetic AB-BA validation harness. See below. |
 
 All keys are documented inline in the shipped TOML.
+
+The intended steady-state configuration is `[phase4_defer] enabled =
+true` AND `[acquire_hook] enabled = true`. The structural fix
+preempts cycles, and the runtime breaker is the safety net.
 
 ## Telemetry
 
@@ -114,23 +176,38 @@ Once per `stats_interval_s` the plugin emits a single info-level line:
 ```
 stats: acq_slow=N cycles_observed=N cycles_confirmed=N
        breaks_done=N breaks_raced=N breaks_suppressed=N
+       phase4_queued=N phase4_drained=N phase4_passthrough=N
      | reaper: scans=N threads=N spinners=N candidates=N
        edges=N stale_reaped=N races=N
 ```
 
 What to expect during normal play:
 
-- `acq_slow` rises steadily (a few hundred per minute under load) –
+- `acq_slow` rises steadily (a few hundred per minute under load) -
   this is normal LockA/LockB contention from the engine's worker
   pool. None of it is a deadlock.
-- `cycles_observed` stays at `0` unless the AB-BA race actually fires.
-- `breaks_done` stays at `0` unless the AB-BA race fires AND persists
+- `phase4_passthrough` rises whenever a thread enters
+  `AddToTempChangeList` / `RemoveFromTempChangeList` outside any
+  LockA-acquirer call (the common case - the structural fix lets
+  the call through unchanged).
+- `phase4_queued` rises whenever the structural fix detects a
+  thread holding LockA and queues a LockB-acquirer call for later.
+  Each `phase4_queued` event represents an AB-BA cycle that was
+  preempted before it could form. `phase4_drained` should match
+  `phase4_queued` over long horizons (every queued call is
+  eventually replayed).
+- `cycles_observed` stays at `0` unless a cycle path the structural
+  fix missed actually fires.
+- `breaks_done` stays at `0` unless such a cycle fires AND persists
   past the confirmation window (i.e. it's a real deadlock, not a
   near-miss).
 
-If `breaks_done` increments and the game keeps running, the plugin
-just rescued you from a freeze that would otherwise have ended the
-session.
+The healthy signature is `phase4_queued > 0, breaks_done = 0`: the
+structural fix is preempting cycles and the runtime breaker is
+finding nothing to do. If `breaks_done > 0`, that indicates the
+structural fix missed a cycle path and the runtime breaker caught
+it - the plugin still rescued you from a freeze, but the case is
+worth reporting so the structural fix can be widened.
 
 When `log_cycle_events = true`, every cycle the breaker actually
 operates on emits a structured `[CYCLE]` / `[BREAK]` block to the
@@ -253,9 +330,14 @@ If the plugin causes any problem, set `plugin.enabled = false` in
 `WorkerSpinLockFix.toml` and restart the game. The plugin will load
 idle and the engine runs unmodified. As individual escape hatches:
 
-- `acquire_hook.enabled = false` runs the plugin reaper-only.
-- `breaker.break_enabled = false` runs in detect-only mode (logs
-  cycles, never force-releases).
+- `phase4_defer.enabled = false` disables the v2.0 structural fix.
+  The v1.0 runtime breaker still detects and breaks cycles.
+- `acquire_hook.enabled = false` disables the v1.0 entry-point hook.
+  The v2.0 structural fix continues to preempt cycles.
+- `breaker.break_enabled = false` runs the runtime breaker in
+  detect-only mode (logs cycles, never force-releases).
+- All three off plus the reaper off makes the plugin completely
+  inert.
 
 ## License
 
