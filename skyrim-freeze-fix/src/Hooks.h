@@ -15,14 +15,23 @@ namespace WorkerSpinLockFix::Hooks {
     //                                         BSSpinLock::Acquire
     //                                         (id 12210) via
     //                                         safetyhook::create_inline.
-    //   4. Reaper::Install() (optional)     — stale-owner backstop for
+    //   4. Phase4Defer::Install() (optional)— structural fix that
+    //                                         breaks the AB-BA cycle's
+    //                                         LA->LB direction by
+    //                                         deferring LockB acquires
+    //                                         (id 40333 / id 40334)
+    //                                         while the current thread
+    //                                         is inside the LockA
+    //                                         acquirer (id 19369). See
+    //                                         Phase4Defer.h.
+    //   5. Reaper::Install() (optional)     — stale-owner backstop for
     //                                         lock owners that died
     //                                         while holding the lock.
     //
-    // Returns true if the AcquireHook was installed. The reaper is best
-    // effort: a reaper failure does not fail Install() since the
-    // AcquireHook + WaitGraph + Breaker pipeline is the primary
-    // mechanism.
+    // Returns true if the AcquireHook was installed. Phase4Defer and
+    // the reaper are best effort: a failure in either does not fail
+    // Install() since the AcquireHook + WaitGraph + Breaker pipeline
+    // is sufficient by itself for the documented engine bug.
     bool Install();
 
 }

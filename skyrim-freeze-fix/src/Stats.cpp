@@ -16,6 +16,11 @@ namespace WorkerSpinLockFix::Stats {
         std::atomic<std::uint64_t> g_break_done{ 0 };
         std::atomic<std::uint64_t> g_break_raced{ 0 };
 
+        // Phase 4 structural defer
+        std::atomic<std::uint64_t> g_p4_queued{ 0 };
+        std::atomic<std::uint64_t> g_p4_drained{ 0 };
+        std::atomic<std::uint64_t> g_p4_passthrough{ 0 };
+
         // Reaper backstop
         std::atomic<std::uint64_t> g_reaper_scans{ 0 };
         std::atomic<std::uint64_t> g_stale_reaped{ 0 };
@@ -33,6 +38,7 @@ namespace WorkerSpinLockFix::Stats {
             logs::info(
                 "stats: acq_slow={} cycles_observed={} cycles_confirmed={} "
                 "breaks_done={} breaks_raced={} breaks_suppressed={} | "
+                "phase4: queued={} drained={} passthrough={} | "
                 "reaper: scans={} threads={} spinners={} candidates={} "
                 "edges={} stale_reaped={} races={}",
                 g_acq_slow.load(std::memory_order_relaxed),
@@ -41,6 +47,9 @@ namespace WorkerSpinLockFix::Stats {
                 g_break_done.load(std::memory_order_relaxed),
                 g_break_raced.load(std::memory_order_relaxed),
                 g_break_suppressed.load(std::memory_order_relaxed),
+                g_p4_queued.load(std::memory_order_relaxed),
+                g_p4_drained.load(std::memory_order_relaxed),
+                g_p4_passthrough.load(std::memory_order_relaxed),
                 g_reaper_scans.load(std::memory_order_relaxed),
                 g_last_threads.load(std::memory_order_relaxed),
                 g_last_spinners.load(std::memory_order_relaxed),
@@ -80,6 +89,16 @@ namespace WorkerSpinLockFix::Stats {
     }
     void OnBreakRaced() noexcept {
         g_break_raced.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    void OnPhase4Queued() noexcept {
+        g_p4_queued.fetch_add(1, std::memory_order_relaxed);
+    }
+    void OnPhase4Drained() noexcept {
+        g_p4_drained.fetch_add(1, std::memory_order_relaxed);
+    }
+    void OnPhase4PassThrough() noexcept {
+        g_p4_passthrough.fetch_add(1, std::memory_order_relaxed);
     }
 
     void OnReaperScan(

@@ -40,6 +40,26 @@ namespace WorkerSpinLockFix::Config {
         // that actually fires can be audited from the log.
         bool log_cycle_events{ true };
 
+        // ---- Phase 4 structural defer (Phase4Defer.cpp) --------------------
+
+        // Phase 4 layered structural fix on top of the v1.0.0 runtime
+        // breaker. Wraps id 19369 (the LockA acquirer) and gates id
+        // 40333 / id 40334 (the two LockB acquirers) so that calls
+        // into the LockB acquirers are deferred when the current
+        // thread is inside the LockA acquirer. This breaks the LA->LB
+        // edge of the AB-BA cycle structurally; the runtime breaker
+        // remains installed as defence-in-depth.
+        //
+        // See docs/case-study/22-v2-phase4-1-cycle-hub-characterisation.md
+        // for the full design and correctness audit.
+        //
+        // Default ON: the structural fix is the cleaner mechanism;
+        // the runtime breaker becomes the safety net rather than the
+        // primary detection layer. Set to false to revert to the
+        // v1.0.0 runtime-breaker-only configuration without
+        // rebuilding or removing the DLL.
+        bool phase4_defer_enabled{ true };
+
         // ---- Backstop: stale-owner reaper ----------------------------------
 
         // The reaper runs as a safety net for cases the entry-point

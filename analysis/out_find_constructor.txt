@@ -1,0 +1,15 @@
+﻿python : [+] image base 0x140000000, .text va=0x1000 (22,051,328 bytes)
+In C:\Users\staeuber\AppData\Local\Temp\ps-script-7984efd8-c921-45e1-9a81-6be215c09249.ps1:90 Zeichen:1
++ python analysis/find_constructor.py 2>&1 | Out-File -FilePath analysi ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: ([+] image base ...,051,328 bytes):String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+[+] addrlib: format=1 version=1.5.97.0 name='SkyrimSE.exe' ptrSize=8 count=778674
+[+] linear disassembly looking for writes...
+    [4,000,000 insns, RVA 0xcb853c]
+
+====================================================================================================
+WRITES to LockB host (lock at +0x150, RVA 0x2f3b8e8)  (RVA 0x2f3b798)
+====================================================================================================
+  (no writes found - the singleton may be initialised elsewhere)

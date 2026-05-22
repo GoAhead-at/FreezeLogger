@@ -1,8 +1,8 @@
 cmake_minimum_required(VERSION 3.26)
 
 project(WorkerSpinLockFix
-    VERSION       1.0.0
-    DESCRIPTION   "SKSE plugin for Skyrim SE 1.5.97 that breaks an AB-BA spinlock inversion in the engine's worker dispatcher at runtime. A surgical inline hook on BSSpinLock::Acquire (id 12210) builds a per-thread wait-for graph for two specific engine BSSpinLock globals; on a confirmed cycle the offending lock's state field is force-released via InterlockedCompareExchange so the spinning thread can proceed."
+    VERSION       2.0.0
+    DESCRIPTION   "SKSE plugin for Skyrim SE 1.5.97 that breaks an AB-BA spinlock inversion in the engine's worker dispatcher. v2.0 adds a structural fix on top of the v1.0 runtime breaker: three inline hooks on the LockA acquirer (id 19369) and the two LockB acquirers (id 40333 / id 40334) defer LockB acquires when LockA is held by the current thread, so the AB-BA cycle simply cannot form. The v1.0 runtime breaker (surgical hook on BSSpinLock::Acquire id 12210, per-thread wait-for graph, time-based confirmation flow, force-release via InterlockedCompareExchange) is retained as defence-in-depth."
     LANGUAGES     CXX
 )
 
@@ -24,6 +24,7 @@ set(SOURCES
     src/AcquireHook.cpp
     src/WaitGraph.cpp
     src/Breaker.cpp
+    src/Phase4Defer.cpp
     src/Reaper.cpp
     src/TestMode.cpp
 )
@@ -37,6 +38,7 @@ set(HEADERS
     src/AcquireHook.h
     src/WaitGraph.h
     src/Breaker.h
+    src/Phase4Defer.h
     src/Reaper.h
     src/TestMode.h
 )

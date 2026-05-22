@@ -62,6 +62,31 @@ confirmation_window_ms = 2
 # audited from the log.
 log_cycle_events = true
 
+[phase4_defer]
+# v2.0 structural fix layered on top of the v1.0 runtime breaker.
+# Three inline hooks (one wrap on the LockA acquirer at id 19369,
+# two entry-gates on the LockB acquirers at id 40333 / id 40334)
+# defer LockB acquires whenever the current thread is inside the
+# LockA acquirer. Deferred calls drain on the same thread immediately
+# after the LockA acquirer returns, so per-thread call ordering is
+# preserved and LockB is acquired with no AB-BA hazard.
+#
+# When this is enabled the v1.0 runtime breaker (surgical hook on
+# BSSpinLock::Acquire + WaitGraph + Breaker + Reaper) becomes the
+# safety net rather than the primary mechanism: the structural fix
+# stops the cycle from forming in the first place. Both layers are
+# orthogonal -- if the structural fix misses any cycle path
+# (an indirect call we did not decode, a future engine code change,
+# an interaction with another mod), the runtime breaker still
+# catches and force-releases.
+#
+# See docs/case-study/22-v2-phase4-1-cycle-hub-characterisation.md
+# for the full design and correctness audit.
+#
+# Default: true. Set to false to revert to the v1.0 runtime-breaker-
+# only behaviour without rebuilding or removing the DLL.
+enabled = true
+
 [reaper]
 # Stale-owner reaper, retained as a safety net for cases the entry-
 # point hook does not see (threads that died still holding a lock,
