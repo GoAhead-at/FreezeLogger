@@ -71,6 +71,19 @@ log_cycle_events = true
 # after the LockA acquirer returns, so per-thread call ordering is
 # preserved and LockB is acquired with no AB-BA hazard.
 #
+# v2.0.1 fixes a regression in scripted-animation activators
+# (skyshards being the most visible case). v2.0.0's wrap on
+# id 19369 was declared `void`, which silently dropped its bool
+# return value -- callers consistently saw "failed" and skipped
+# their downstream work. v2.0.1's wrap is `bool`-returning and
+# uses `unsafe_call<bool>` to capture and propagate the original's
+# return. As defensive scaffolding, v2.0.1 also splits the
+# deferred operation so the kInTempChangeList bit toggle on
+# Actor::boolBits (bit 9 of [actor+0xe0]) runs SYNCHRONOUSLY
+# inside the gate (single atomic fetch_or / fetch_and, no LockB
+# needed); only the LockB-protected bucket-array update stays
+# deferred.
+#
 # When this is enabled the v1.0 runtime breaker (surgical hook on
 # BSSpinLock::Acquire + WaitGraph + Breaker + Reaper) becomes the
 # safety net rather than the primary mechanism: the structural fix
@@ -81,11 +94,42 @@ log_cycle_events = true
 # catches and force-releases.
 #
 # See docs/case-study/22-v2-phase4-1-cycle-hub-characterisation.md
-# for the full design and correctness audit.
+# for the v2.0 design and the original (insufficient) correctness
+# audit, and docs/case-study/24-v2-0-1-skyshard-regression-fix.md
+# for the v2.0.1 retrospective (bool-returning wrap fix +
+# defensive synchronous bit toggle).
 #
 # Default: true. Set to false to revert to the v1.0 runtime-breaker-
 # only behaviour without rebuilding or removing the DLL.
 enabled = true
+
+# Per-call diagnostic logging for Phase4Defer. Each entry into the
+# LockA wrap and each entry into the two LockB gates emits a log
+# line with the arguments, the captured return value, and the
+# deferred-queue depth. Volume is high during gameplay (hundreds of
+# lines per second) but spdlog buffers writes asynchronously, so
+# the in-game cost is low.
+#
+# Use this to diagnose regressions in scripted-animation activators
+# (skyshards, idle pickups, etc.) where the symptom alone doesn't
+# pinpoint which hook is at fault. Workflow:
+#
+#   1. Set diagnostic_logging = true and start the game.
+#   2. Walk to the affected interaction (e.g. a skyshard).
+#   3. Press E once. Wait two seconds.
+#   4. Quit. Set diagnostic_logging = false.
+#   5. Read SKSE\\Logs\\WorkerSpinLockFix.log.
+#
+# What to look for:
+#   - LockA-WRAP-ENTER lines around the time of the interaction
+#     prove the hook is even being entered.
+#   - The result= field on LockA-WRAP-EXIT shows whether the
+#     activation chain reported success.
+#   - ADD-DEFER / REMOVE-DEFER lines show queued LockB calls.
+#   - DRAIN lines show the queue being flushed after the wrap returns.
+#
+# Default: false.
+diagnostic_logging = false
 
 [reaper]
 # Stale-owner reaper, retained as a safety net for cases the entry-

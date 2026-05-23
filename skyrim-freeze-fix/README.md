@@ -3,16 +3,35 @@
 SKSE plugin for **Skyrim SE 1.5.97** that fixes a documented AB-BA
 spinlock inversion in the engine's worker dispatcher.
 
-**v2.0.0 (current)** ships a structural fix layered on top of the
+**v2.0.1 (internal)** ships a structural fix layered on top of the
 v1.0.0 runtime breaker. Three inline hooks (one wrap on the LockA
-acquirer, two entry-gates on the LockB acquirers) defer LockB
-acquires whenever the current thread is inside the LockA acquirer,
-so the AB-BA cycle simply cannot form. The v1.0.0 runtime breaker
-(surgical hook on `BSSpinLock::Acquire`, per-thread wait-for graph,
-time-based confirmation flow, force-release via
-`InterlockedCompareExchange`) is retained as defence-in-depth: if
-the structural fix misses any cycle path the runtime breaker still
-catches and force-releases.
+acquirer, two entry-gates on the LockB acquirers) defer the
+LockB-protected portion of the LockB acquirers whenever the current
+thread is inside the LockA acquirer, so the AB-BA cycle simply
+cannot form. The wrap on `id 19369` matches the engine function's
+real signature: 6 args (`rcx`, `rdx`, `r8b`, `r9`, plus a dword
+stack arg 5 at `[rsp+0x28]` and a byte stack arg 6 at `[rsp+0x30]`)
+and a `bool` return, all forwarded verbatim through
+`unsafe_call<bool>`. The per-actor `kInTempChangeList` bit toggle
+runs synchronously in the gate as defensive scaffolding -- it
+eliminates any stale-flag window for readers that might observe
+bit 9 inside the LockA scope without adding any lock contention.
+The v1.0.0 runtime breaker (surgical hook on `BSSpinLock::Acquire`,
+per-thread wait-for graph, time-based confirmation flow,
+force-release via `InterlockedCompareExchange`) is retained as
+defence-in-depth: if the structural fix misses any cycle path the
+runtime breaker still catches and force-releases.
+
+> v2.0.0 silently broke scripted-animation activators (skyshards
+> being the most visible case). Three diagnostic cuts of v2.0.1
+> were needed to find the actual cause: the wrap declared 4 args
+> for an engine function that takes 6, so the trampoline read
+> garbage for arg 5 and arg 6 every invocation. The earlier
+> hypotheses (stale-bit window, dropped `bool` return) turned
+> out to be incorrect; the bit-toggle and bool-return fixes
+> from those passes are kept as defensive scaffolding. The
+> 6-arg wrap signature is the load-bearing fix. See
+> [`../docs/case-study/24-v2-0-1-skyshard-regression-fix.md`](../docs/case-study/24-v2-0-1-skyshard-regression-fix.md).
 
 This is the companion fix plugin for `FreezeLogger`. The bug it
 addresses is documented in

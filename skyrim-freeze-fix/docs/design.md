@@ -83,9 +83,11 @@ all with the same two-lock topology.
                  thread enters id 19369 (LockA acquirer)
                  ─────────────────────────────────────────
                   ++tl_lockA_depth
-                  unsafe_call original
+                  bool result =
+                      unsafe_call<bool>(original)   // returns bool!
                   --tl_lockA_depth
                   if (tl_lockA_depth == 0) DrainDeferred()
+                  return result               // propagate to caller
 
 
                  thread enters id 40333 / id 40334
@@ -93,10 +95,18 @@ all with the same two-lock topology.
                  inside id 19369 via id 36016 cycle hub)
                  ─────────────────────────────────────────
                   if (tl_lockA_depth > 0) {
+                      // Defensive synchronous half:
+                      // toggle kInTempChangeList atomically so any
+                      // reader of bit 9 inside the LockA scope sees
+                      // the post-call state. Idempotent w.r.t. the
+                      // drain's later call to the original.
+                      actor->boolBits.fetch_or  / fetch_and(mask)
+
+                      // Deferred half:
                       tl_deferred.push_back({kind, pl, actor});
                       return;            // skip LockB acquire
                   }
-                  unsafe_call original   // fast path
+                  unsafe_call<void>(original)   // fast path
 ```
 
 Per-thread state is a single `int tl_lockA_depth` and a small
@@ -113,10 +123,44 @@ The LB->LA direction (`id 40285` -> `id 36614` -> `id 38413` ->
 `id 19369`) is intentionally left untouched. Once the LA->LB edge
 is broken, the cycle cannot close in either direction.
 
-A correctness audit (doc 22 §4) confirmed that the immediate
-followup at each LockB-acquirer call site (`id 36016 +0xdcb`,
-`id 19372 +0x606`, `id 36016 +0xfa3`) does **not** read fields the
-deferred functions mutate. Defer-when-LockA-held is mutation-safe.
+**Wrap signature matters.** `id 19369` is **not** a 4-arg
+function. The body reads stack args 5 and 6 at `[rbp+0x77]`
+(dword) and `[rbp+0x7f]` (byte) at six call sites. The function
+also returns `bool` (`movzx eax, bl; ret`). The current wrap
+matches all of that:
+
+```cpp
+bool __fastcall HookedLockAAcquirer(
+    void* rcx, void* rdx, std::uint8_t r8b, std::uintptr_t r9,
+    std::uint32_t stack_arg5, std::uint8_t stack_arg6);
+```
+
+with `unsafe_call<bool>(...all 6 args...)` to forward verbatim
+through the trampoline.
+
+v2.0.0 declared this with only 4 register args and a `void`
+return. Three independent failure modes followed:
+
+1. The trampoline read garbage for stack args 5 and 6 every
+   invocation, so `id 19369` ran with corrupted arguments.
+2. The trampoline's `bool` result was discarded; callers
+   reading `eax` after the wrap saw whatever
+   `--tl_lockA_depth` left there.
+3. Doc 22 §4's audit didn't catch either: it focused only on
+   call-site followup state, not on the wrap's calling
+   convention.
+
+The 6-arg `bool`-returning wrap fixes all three. The
+synchronous `kInTempChangeList` bit toggle is kept as
+defensive scaffolding (idempotent w.r.t. the drain; eliminates
+a stale-flag window for any future intra-LockA-scope reader of
+bit 9; cost is one atomic op per gate hit, no lock contention).
+
+The corrected audit methodology is documented in doc 24 §6:
+**read the full prologue AND epilogue AND every `[rbp+offset]`
+access in the body before declaring any wrap.** Full
+retrospective in
+`../../docs/case-study/24-v2-0-1-skyshard-regression-fix.md`.
 
 ### 2.2 Layer 2 - Runtime breaker
 
@@ -192,8 +236,18 @@ void __fastcall HookedLockAAcquirer(void* rcx, void* rdx,
     if (--tl_lockA_depth == 0) DrainDeferredOnExit();
 }
 
+// Synchronous half (added in v2.0.1): toggle kInTempChangeList
+// atomically inside the gate. Single fetch_or / fetch_and on the
+// actor's own boolBits word; no LockB needed. Downstream readers
+// of the bit observe the new state immediately. Idempotent w.r.t.
+// the drain's later call to the original.
 void __fastcall HookedAddToTempChangeList(void* pl, void* actor) {
     if (tl_lockA_depth > 0) {
+        if (actor) {
+            BoolBitsAtomic(actor)->fetch_or(
+                kInTempChangeListMask,
+                std::memory_order_acq_rel);
+        }
         tl_deferred.push_back({DeferKind::kAdd, pl, actor});
         Stats::OnPhase4Queued();
         return;
@@ -205,6 +259,11 @@ void __fastcall HookedAddToTempChangeList(void* pl, void* actor) {
 void __fastcall HookedRemoveFromTempChangeList(void* pl,
                                                void* actor) {
     if (tl_lockA_depth > 0) {
+        if (actor) {
+            BoolBitsAtomic(actor)->fetch_and(
+                ~kInTempChangeListMask,
+                std::memory_order_acq_rel);
+        }
         tl_deferred.push_back({DeferKind::kRemove, pl, actor});
         Stats::OnPhase4Queued();
         return;

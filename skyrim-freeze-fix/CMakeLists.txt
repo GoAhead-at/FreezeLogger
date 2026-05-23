@@ -1,8 +1,8 @@
 cmake_minimum_required(VERSION 3.26)
 
 project(WorkerSpinLockFix
-    VERSION       2.0.0
-    DESCRIPTION   "SKSE plugin for Skyrim SE 1.5.97 that breaks an AB-BA spinlock inversion in the engine's worker dispatcher. v2.0 adds a structural fix on top of the v1.0 runtime breaker: three inline hooks on the LockA acquirer (id 19369) and the two LockB acquirers (id 40333 / id 40334) defer LockB acquires when LockA is held by the current thread, so the AB-BA cycle simply cannot form. The v1.0 runtime breaker (surgical hook on BSSpinLock::Acquire id 12210, per-thread wait-for graph, time-based confirmation flow, force-release via InterlockedCompareExchange) is retained as defence-in-depth."
+    VERSION       2.0.1
+    DESCRIPTION   "SKSE plugin for Skyrim SE 1.5.97 that breaks an AB-BA spinlock inversion in the engine's worker dispatcher. v2.0 adds a structural fix on top of the v1.0 runtime breaker: three inline hooks on the LockA acquirer (id 19369) and the two LockB acquirers (id 40333 / id 40334) defer LockB acquires when LockA is held by the current thread, so the AB-BA cycle simply cannot form. v2.0.1 fixes a regression in scripted-animation activators (skyshards being the most visible case): v2.0.0's wrap on id 19369 was declared void and silently dropped its bool return value, so callers consistently saw 'failed' and skipped their downstream work. v2.0.1's wrap is bool-returning and propagates the original's return via unsafe_call<bool>. As defensive scaffolding, v2.0.1 also splits the deferred operation so the kInTempChangeList bit toggle (bit 9 of [actor+0xe0]) runs synchronously in the gate (single atomic fetch_or / fetch_and) while only the LockB-protected bucket-array update stays deferred. The v1.0 runtime breaker (surgical hook on BSSpinLock::Acquire id 12210, per-thread wait-for graph, time-based confirmation flow, force-release via InterlockedCompareExchange) is retained as defence-in-depth."
     LANGUAGES     CXX
 )
 

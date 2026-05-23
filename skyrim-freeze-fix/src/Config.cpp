@@ -67,6 +67,9 @@ namespace WorkerSpinLockFix::Config {
 
             g_settings.phase4_defer_enabled =
                 tbl["phase4_defer"]["enabled"].value_or(g_settings.phase4_defer_enabled);
+            g_settings.phase4_defer_diagnostic_logging =
+                tbl["phase4_defer"]["diagnostic_logging"].value_or(
+                    g_settings.phase4_defer_diagnostic_logging);
 
             g_settings.reaper_enabled =
                 tbl["reaper"]["enabled"].value_or(g_settings.reaper_enabled);
@@ -82,6 +85,7 @@ namespace WorkerSpinLockFix::Config {
                 "acquire_hook_enabled={}, break_enabled={}, "
                 "confirmation_window_ms={}, log_cycle_events={}, "
                 "phase4_defer_enabled={}, "
+                "phase4_defer_diagnostic_logging={}, "
                 "reaper_enabled={}, reaper_interval_ms={}, "
                 "test_mode_enabled={}",
                 path.string(),
@@ -92,6 +96,7 @@ namespace WorkerSpinLockFix::Config {
                 g_settings.confirmation_window_ms,
                 g_settings.log_cycle_events,
                 g_settings.phase4_defer_enabled,
+                g_settings.phase4_defer_diagnostic_logging,
                 g_settings.reaper_enabled,
                 g_settings.reaper_interval_ms,
                 g_settings.test_mode_enabled);

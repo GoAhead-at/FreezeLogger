@@ -60,6 +60,22 @@ namespace WorkerSpinLockFix::Config {
         // rebuilding or removing the DLL.
         bool phase4_defer_enabled{ true };
 
+        // Per-call diagnostic logging for Phase4Defer. When true, every
+        // entry into the LockA wrap and every entry into the two LockB
+        // gates is logged with its arguments, the captured return
+        // value, and the deferred-queue depth. Volume is high during
+        // gameplay (hundreds of lines per second) but the cost is
+        // bounded -- spdlog buffers writes asynchronously. Intended
+        // for diagnosing regressions in scripted-animation activators
+        // (skyshards, idle pickups, etc.) where the behavioural
+        // symptom doesn't pinpoint which hook is at fault.
+        //
+        // Default OFF. Enable, reproduce the symptom once, disable
+        // again. The log will show whether the hooks were even
+        // entered for the affected interaction, and what values
+        // flowed through them.
+        bool phase4_defer_diagnostic_logging{ false };
+
         // ---- Backstop: stale-owner reaper ----------------------------------
 
         // The reaper runs as a safety net for cases the entry-point

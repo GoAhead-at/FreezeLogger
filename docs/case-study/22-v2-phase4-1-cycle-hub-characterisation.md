@@ -188,6 +188,47 @@ Mutations under LockB:
 
 ## 2. Post-call followup is decoupled from the LockB mutations
 
+> **POST-RELEASE CORRECTION (added 2026-05-23, revised through
+> three diagnostic cuts the same day):** three distinct issues
+> with v2.0.0's wrap on `id 19369` surfaced under this audit. The
+> first two hypotheses turned out to be wrong; the third is
+> supported by direct log evidence.
+>
+> **Hypothesis 1 (wrong):** the audit question in this section
+> was too narrow because it checked only the direct caller's
+> *next instruction* for stale reads of the deferred mutation.
+> Cut 1 of v2.0.1 split the deferred `kInTempChangeList` bit
+> toggle out so it ran synchronously. The user reported skyshards
+> still did not work.
+>
+> **Hypothesis 2 (wrong):** `HookedLockAAcquirer` was declared
+> `void`, but `id 19369`'s epilogue is `movzx eax, bl; ret`. Cut
+> 2 of v2.0.1 made the wrap return `bool` and captured the
+> trampoline's return via `unsafe_call<bool>`. The user reported
+> skyshards still did not work.
+>
+> **Actual root cause (correct):** `id 19369` takes **six** args,
+> not four. The body reads stack arg 5 (dword) at `[rbp+0x77]`
+> and stack arg 6 (byte) at `[rbp+0x7f]` six times across the
+> function (line locations: +0x47, +0x87, +0x2f5, +0x41f, +0x583,
+> +0x5c1). The wrap was declared with only four register args, so
+> when MSVC called the trampoline through `unsafe_call`, the
+> outgoing stack-arg slots at `[rsp+0x28]` / `[rsp+0x30]` were
+> uninitialised. The trampoline read garbage for arg 5 and arg 6
+> on every invocation, and the function ran with corrupted
+> arguments. Cut 3 of v2.0.1 declares the wrap with all six args
+> and forwards them verbatim. Skyshards work; the structural fix
+> engages on real cycles in normal play (`phase4: queued=9
+> drained=9` over one minute, all preempted before the AB-BA
+> cycle could form). The bool-return capture and the synchronous
+> bit toggle are kept as defensive scaffolding.
+>
+> See [`24-v2-0-1-skyshard-regression-fix.md`](24-v2-0-1-skyshard-regression-fix.md)
+> for the full retrospective with log evidence and the corrected
+> audit methodology ("read the full prologue AND epilogue AND
+> every `[rbp+offset]` access in the body before declaring the
+> wrap").
+
 The critical correctness check for any "defer the LockB acquirer
 when LockA is held" design is: **does the caller of id 40333 / id
 40334 immediately read fields that those functions just mutated?**

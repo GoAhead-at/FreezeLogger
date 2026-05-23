@@ -6,11 +6,14 @@
 **Modlist:** Nolvus Awakening (Skyrim SE 1.5.97)
 **Outcome:** Root cause identified (AB-BA spinlock inversion in
 Skyrim's worker dispatcher), a working runtime fix shipped as
-`WorkerSpinLockFix` v1.0.0 on 2026-05-21, and a structural fix
-shipped as `WorkerSpinLockFix` v2.0.0 on 2026-05-22 that preempts
-the cycle before it can form. The v1.0 runtime breaker remains
-installed in v2.0.0 as defence-in-depth. See document 23 for the
-v2.0.0 release note.
+`WorkerSpinLockFix` v1.0.0 on 2026-05-21, a structural fix shipped
+as `WorkerSpinLockFix` v2.0.0 on 2026-05-22 that preempts the
+cycle before it can form, plus an internal v2.0.1 patch on
+2026-05-23 that fixes a regression in scripted-animation
+activators (skyshards) caused by a 4-arg wrap on a 6-arg engine
+function. The v1.0 runtime breaker remains installed in v2.0.x
+as defence-in-depth. See documents 23 and 24 for the v2.0.0 /
+v2.0.1 release notes.
 
 This folder contains the long-form case study describing how a custom SKSE
 diagnostics plugin was designed, iterated on across multiple real freezes,
@@ -251,6 +254,28 @@ and ultimately used to localize a deadlock to two specific functions inside
   `Phase4Defer`, in-game smoke test on doc-19 freeze-prone
   scenarios, optional upstream PR to `EngineFixesSkyrim64`,
   reactive C5 widening if a missed cycle path is ever observed).
+- `24-v2-0-1-skyshard-regression-fix.md` - v2.0.1 retrospective.
+  v2.0.0 silently broke scripted-animation activators (skyshards
+  the most visible). Three diagnostic cuts: (1) blamed a stale
+  `kInTempChangeList` window, split the bit toggle out -- didn't
+  fix it; (2) blamed a `void` wrap dropping `id 19369`'s `bool`
+  return -- didn't fix it; (3) discovered `id 19369` takes
+  **six args, not four**. The body reads stack args 5 and 6 at
+  `[rbp+0x77]` / `[rbp+0x7f]` (six call sites: +0x47, +0x87,
+  +0x2f5, +0x41f, +0x583, +0x5c1). The 4-arg wrap left those
+  positions uninitialised on the trampoline call, so every
+  invocation of `id 19369` ran with garbage for arg 5 and
+  arg 6. The 6-arg wrap is the load-bearing fix; the bool-return
+  capture and the synchronous bit toggle are kept as defensive
+  scaffolding. Confirmed by direct log evidence with the new
+  `[phase4_defer].diagnostic_logging` toggle:
+  `arg5=0x00000001 arg6=0x00` is what the engine actually
+  passes, and `phase4: queued=9 drained=9 passthrough=8725` in
+  one minute of play shows the structural fix engaging on real
+  cycles (no AB-BA cycle ever formed: `cycles_observed=0
+  breaks_done=0`). v2.0.1 is an internal build only -- the
+  version label was retained per the user's request because the
+  artefact was never officially released.
 - `appendix-A-evidence.md` - Raw freeze logs, disassembly excerpts, register
   dumps used as evidence in the main narrative.
 
