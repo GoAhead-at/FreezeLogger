@@ -64,25 +64,40 @@ log_cycle_events = true
 
 [phase4_defer]
 # v2.0 structural fix layered on top of the v1.0 runtime breaker.
-# Three inline hooks (one wrap on the LockA acquirer at id 19369,
-# two entry-gates on the LockB acquirers at id 40333 / id 40334)
-# defer LockB acquires whenever the current thread is inside the
-# LockA acquirer. Deferred calls drain on the same thread immediately
-# after the LockA acquirer returns, so per-thread call ordering is
-# preserved and LockB is acquired with no AB-BA hazard.
+# One inline hook (a wrap on the LockA acquirer at id 19369) plus
+# TWO call-site patches inside the cycle hub defer LockB acquires
+# whenever the current thread is inside the LockA acquirer.
+# Deferred calls drain on the same thread immediately after the
+# LockA acquirer returns, so per-thread call ordering is preserved
+# and LockB is acquired with no AB-BA hazard.
 #
-# v2.0.1 fixes a regression in scripted-animation activators
-# (skyshards being the most visible case). v2.0.0's wrap on
-# id 19369 was declared `void`, which silently dropped its bool
-# return value -- callers consistently saw "failed" and skipped
-# their downstream work. v2.0.1's wrap is `bool`-returning and
-# uses `unsafe_call<bool>` to capture and propagate the original's
-# return. As defensive scaffolding, v2.0.1 also splits the
-# deferred operation so the kInTempChangeList bit toggle on
-# Actor::boolBits (bit 9 of [actor+0xe0]) runs SYNCHRONOUSLY
-# inside the gate (single atomic fetch_or / fetch_and, no LockB
-# needed); only the LockB-protected bucket-array update stays
-# deferred.
+# v2.0.1 evolved twice in pre-release:
+#
+#   - First cut: three function-wrap inline hooks (id 19369 wrap +
+#     id 40333 / id 40334 entry gates). Fixed the skyshard
+#     regression by switching id 19369's wrap to `bool`-returning
+#     and capturing the result via unsafe_call<bool>. Also split
+#     the deferred operation so the kInTempChangeList bit toggle on
+#     Actor::boolBits (bit 9 of [actor+0xe0]) runs SYNCHRONOUSLY
+#     in the gate; only the LockB-protected bucket-array update is
+#     deferred.
+#
+#   - Second cut (current): the function-wraps on id 40333 / id 40334
+#     have been replaced with two call-site patches inside the
+#     cycle hub:
+#       * id 36016+0xdcb  (the engine's direct call to id 40334)
+#       * id 19372+0x606  (the inner call to id 40333 from the
+#                          AddToTempChangeList wrapper that the
+#                          cycle hub reaches via id 36016+0xfa3)
+#     These two call sites are the only paths through which id
+#     40333 / id 40334 are reachable while LockA is held. Patching
+#     them instead of the function entries shrinks the gate's
+#     blast radius to exactly the cycle path; callers of id 40333
+#     / id 40334 from outside the cycle no longer pay the gate
+#     cost at all, and any other mod that hooks the function
+#     entries continues to work for those callers and continues to
+#     run when this plugin drains the deferred queue. The
+#     synchronous bit toggle is preserved.
 #
 # When this is enabled the v1.0 runtime breaker (surgical hook on
 # BSSpinLock::Acquire + WaitGraph + Breaker + Reaper) becomes the
@@ -95,9 +110,12 @@ log_cycle_events = true
 #
 # See docs/case-study/22-v2-phase4-1-cycle-hub-characterisation.md
 # for the v2.0 design and the original (insufficient) correctness
-# audit, and docs/case-study/24-v2-0-1-skyshard-regression-fix.md
-# for the v2.0.1 retrospective (bool-returning wrap fix +
-# defensive synchronous bit toggle).
+# audit; docs/case-study/24-v2-0-1-skyshard-regression-fix.md for
+# the v2.0.1 first-cut retrospective (bool-returning wrap fix +
+# defensive synchronous bit toggle); and
+# docs/case-study/25-v2-0-1-callsite-refactor.md for the v2.0.1
+# second-cut retrospective (function-wraps -> call-site patches,
+# informed by analysis of GarrixWong's skyrim-freeze-fix).
 #
 # Default: true. Set to false to revert to the v1.0 runtime-breaker-
 # only behaviour without rebuilding or removing the DLL.

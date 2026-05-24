@@ -77,6 +77,16 @@ extern "C" [[maybe_unused]] __declspec(dllexport) bool SKSEAPI SKSEPlugin_Load(
         return true;
     }
 
+    // SKSE trampoline pool. Sized for Phase4Defer's two call-site
+    // patches (14 bytes each via Trampoline::write_call<5>) plus
+    // generous headroom for any future patches. Allocating it here
+    // -- rather than inside Phase4Defer::Install() -- keeps the
+    // trampoline owned by the plugin's load-time prologue and avoids
+    // re-allocating across hook reinstalls. AcquireHook continues to
+    // use safetyhook (which manages its own per-hook trampoline) and
+    // does not consume from this pool.
+    SKSE::AllocTrampoline(64);
+
     if (!WorkerSpinLockFix::Hooks::Install()) {
         logs::critical("Hook installation failed; plugin will run idle.");
         return true;

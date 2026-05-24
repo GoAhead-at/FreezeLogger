@@ -11,9 +11,12 @@ as `WorkerSpinLockFix` v2.0.0 on 2026-05-22 that preempts the
 cycle before it can form, plus an internal v2.0.1 patch on
 2026-05-23 that fixes a regression in scripted-animation
 activators (skyshards) caused by a 4-arg wrap on a 6-arg engine
-function. The v1.0 runtime breaker remains installed in v2.0.x
-as defence-in-depth. See documents 23 and 24 for the v2.0.0 /
-v2.0.1 release notes.
+function, plus a v2.0.1 call-site refactor on 2026-05-24 that
+shrinks the LockB-acquirer gates' blast radius from
+function-wraps to two surgical call-site patches inside the
+cycle hub. The v1.0 runtime breaker remains installed in v2.0.x
+as defence-in-depth. See documents 23, 24, and 25 for the
+v2.0.0 / v2.0.1 / v2.0.1-callsite release notes.
 
 This folder contains the long-form case study describing how a custom SKSE
 diagnostics plugin was designed, iterated on across multiple real freezes,
@@ -276,6 +279,26 @@ and ultimately used to localize a deadlock to two specific functions inside
   breaks_done=0`). v2.0.1 is an internal build only -- the
   version label was retained per the user's request because the
   artefact was never officially released.
+- `25-v2-0-1-callsite-refactor.md` - v2.0.1 call-site refactor.
+  After analysing GarrixWong's `skyrim-freeze-fix` (a separate
+  engine-deadlock mod targeting `BSReadWriteLock` cell-loading
+  freezes), the LockB-acquirer gates are switched from
+  function-wraps on `id 40333` / `id 40334` to two surgical
+  `Trampoline::write_call<5>` patches at `id 36016+0xdcb` and
+  `id 19372+0x606` -- the only two call sites in the binary
+  that reach `id 40333` / `id 40334` while LockA is held. Wins:
+  ~26000 hot-path passthroughs per minute drop to near zero
+  (only cycle-hub-reachable callers pay the gate cost), the
+  function entries stay pristine so other mods that hook
+  `id 40333` / `id 40334` continue to work, and any pre-existing
+  call-site rewrite by another mod is detected (pre-patch
+  verification of the 5-byte CALL bytes) instead of silently
+  stomped. The LockA acquirer wrap on `id 19369` is unchanged --
+  the depth counter still requires whole-function bracketing.
+  Documents the deliberate scope split between this plugin
+  (`BSSpinLock` AB-BA) and `skyrim-freeze-fix` (`BSReadWriteLock`
+  cell-loading deadlocks) so users understand the two are
+  complementary, not alternatives.
 - `appendix-A-evidence.md` - Raw freeze logs, disassembly excerpts, register
   dumps used as evidence in the main narrative.
 

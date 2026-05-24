@@ -76,9 +76,10 @@ namespace WorkerSpinLockFix::Hooks {
             "LockA/LockB; all other BSSpinLocks fast-path bypass "
             "through the lock-free trampoline. When phase4_active "
             "is true the structural fix breaks the AB-BA cycle's "
-            "LA->LB direction at the LockB-acquirer entry points, "
-            "so the runtime breaker becomes a safety net rather "
-            "than the primary mechanism.",
+            "LA->LB direction at the two cycle-hub call sites "
+            "(id 36016+0xdcb -> id 40334 and id 19372+0x606 -> "
+            "id 40333), so the runtime breaker becomes a safety "
+            "net rather than the primary mechanism.",
             acquire_hook_active,
             cfg.break_enabled,
             cfg.confirmation_window_ms,

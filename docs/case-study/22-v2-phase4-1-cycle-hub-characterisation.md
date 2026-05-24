@@ -229,6 +229,24 @@ Mutations under LockB:
 > every `[rbp+offset]` access in the body before declaring the
 > wrap").
 
+> **POST-RELEASE CORRECTION 2 (added 2026-05-24):** the
+> *placement* of the LockB-acquirer gates has also moved. After
+> analysing GarrixWong's `skyrim-freeze-fix` (a separate engine-
+> deadlock mod) the function-wrap inline hooks on `id 40333` and
+> `id 40334` were replaced with two surgical
+> `Trampoline::write_call<5>` patches at the only two call sites
+> in the binary that reach them while LockA is held: the very
+> sites under audit in this section, namely **id 36016+0xdcb**
+> and **id 19372+0x606**. The audit's correctness conclusion
+> stands unchanged (the immediate followup at each site does not
+> read the deferred mutations); only the *implementation* of the
+> deferral has moved closer to the audited site. Function entries
+> of `id 40333` / `id 40334` are now left pristine, so other mods
+> that hook those functions cooperate with this plugin instead of
+> racing for the prologue. See
+> [`25-v2-0-1-callsite-refactor.md`](25-v2-0-1-callsite-refactor.md)
+> for the full rationale and the comparison with `skyrim-freeze-fix`.
+
 The critical correctness check for any "defer the LockB acquirer
 when LockA is held" design is: **does the caller of id 40333 / id
 40334 immediately read fields that those functions just mutated?**

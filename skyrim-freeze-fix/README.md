@@ -4,14 +4,15 @@ SKSE plugin for **Skyrim SE 1.5.97** that fixes a documented AB-BA
 spinlock inversion in the engine's worker dispatcher.
 
 **v2.0.1 (internal)** ships a structural fix layered on top of the
-v1.0.0 runtime breaker. Three inline hooks (one wrap on the LockA
-acquirer, two entry-gates on the LockB acquirers) defer the
-LockB-protected portion of the LockB acquirers whenever the current
-thread is inside the LockA acquirer, so the AB-BA cycle simply
-cannot form. The wrap on `id 19369` matches the engine function's
-real signature: 6 args (`rcx`, `rdx`, `r8b`, `r9`, plus a dword
-stack arg 5 at `[rsp+0x28]` and a byte stack arg 6 at `[rsp+0x30]`)
-and a `bool` return, all forwarded verbatim through
+v1.0.0 runtime breaker. One inline hook (a wrap on the LockA
+acquirer at `id 19369`) plus two surgical call-site patches inside
+the cycle hub (`id 36016+0xdcb` and `id 19372+0x606`) defer the
+LockB-protected portion of `id 40333` / `id 40334` whenever the
+current thread is inside the LockA acquirer, so the AB-BA cycle
+simply cannot form. The wrap on `id 19369` matches the engine
+function's real signature: 6 args (`rcx`, `rdx`, `r8b`, `r9`, plus
+a dword stack arg 5 at `[rsp+0x28]` and a byte stack arg 6 at
+`[rsp+0x30]`) and a `bool` return, all forwarded verbatim through
 `unsafe_call<bool>`. The per-actor `kInTempChangeList` bit toggle
 runs synchronously in the gate as defensive scaffolding -- it
 eliminates any stale-flag window for readers that might observe
@@ -32,6 +33,40 @@ runtime breaker still catches and force-releases.
 > from those passes are kept as defensive scaffolding. The
 > 6-arg wrap signature is the load-bearing fix. See
 > [`../docs/case-study/24-v2-0-1-skyshard-regression-fix.md`](../docs/case-study/24-v2-0-1-skyshard-regression-fix.md).
+>
+> A subsequent v2.0.1 refactor (also internal) replaces the two
+> entry-gates on `id 40333` / `id 40334` with surgical call-site
+> patches at `id 36016+0xdcb` and `id 19372+0x606`. Same gate
+> semantics, narrower blast radius, and other mods that hook
+> `id 40333` / `id 40334` directly continue to work. See
+> [`../docs/case-study/25-v2-0-1-callsite-refactor.md`](../docs/case-study/25-v2-0-1-callsite-refactor.md).
+
+## Scope
+
+This plugin addresses **one** documented engine bug: the AB-BA
+inversion between two specific `BSSpinLock` globals (LockA at
+`SkyrimSE+0x2eff8e0`, LockB at `SkyrimSE+0x2f3b8e8`) inside the
+worker dispatcher. It does **not** address:
+
+- Cell-loading freezes caused by `BSReadWriteLock` deadlocks. If
+  your freezes correlate with crossing cell boundaries, install
+  GarrixWong's [`skyrim-freeze-fix`](https://github.com/garrixwong/skyrim-freeze-fix)
+  or a successor in addition to this plugin. The two mods are
+  complementary -- they target different lock primitives at
+  different call sites and can run together without conflict.
+- HDT-SMP / havok physics-pipeline waits where the main thread is
+  blocked on a producer-consumer event. Freezes of that shape
+  show no `BSSpinLock` activity in this plugin's telemetry; they
+  belong to the physics mod chain.
+- Generic engine slowdowns, stuck splash screens, or
+  startup-script issues unrelated to the worker-pool spinlock
+  cycle.
+
+The plugin's diagnostic logging and `cycles_observed` /
+`breaks_done` counters can confirm whether a given freeze is in
+this plugin's scope. If `cycles_observed` is `0` while you are
+frozen, the freeze is *not* the AB-BA `BSSpinLock` cycle and a
+different mod is the right place to look.
 
 This is the companion fix plugin for `FreezeLogger`. The bug it
 addresses is documented in
@@ -66,23 +101,38 @@ The plugin layers two complementary mechanisms.
 
 ### Layer 1 - Structural fix (v2.0, primary)
 
-Three additional inline hooks via `safetyhook::create_inline`:
+One inline hook on the LockA acquirer plus two surgical
+call-site patches inside the cycle hub:
 
-1. **`id 19369` (LockA acquirer) wrap** - increments a thread-local
-   "LockA depth" counter on entry, runs the original, decrements on
-   return, and drains the deferred-call queue when the counter
-   returns to 0.
-2. **`id 40333` (`AddToTempChangeList`) entry-gate** - if the
-   current thread's LockA depth is `> 0`, push `(pl, actor)` onto
-   the thread-local deferred queue and return early. Otherwise
-   tail-call the original.
-3. **`id 40334` (`RemoveFromTempChangeList`) entry-gate** - same
-   shape as `id 40333`'s gate.
+1. **`id 19369` (LockA acquirer) wrap via `safetyhook::create_inline`** -
+   increments a thread-local "LockA depth" counter on entry, runs
+   the original, decrements on return, and drains the deferred-
+   call queue when the counter returns to 0.
+2. **`id 36016+0xdcb` (call to `id 40334`) call-site patch via
+   `Trampoline::write_call<5>`** - if the current thread's LockA
+   depth is `> 0`, synchronously clear `kInTempChangeList`, push
+   `(pl, actor)` onto the thread-local deferred queue, return
+   early. Otherwise tail-call the original `id 40334`.
+3. **`id 19372+0x606` (inner call to `id 40333`) call-site patch
+   via `Trampoline::write_call<5>`** - same shape: if LockA is
+   held, set `kInTempChangeList` synchronously and queue the
+   bucket-array append; otherwise tail-call the original
+   `id 40333`.
 
 The drain at LockA-depth-0 happens on the same thread that originally
 queued the call, so per-thread call ordering is preserved. LockB is
 acquired normally during the drain because LockA is no longer held.
 The AB-BA cycle simply cannot form.
+
+The two call sites we patch are the **only** paths in the binary
+through which `id 40333` / `id 40334` are reached while LockA is
+held (verified during Phase 4.1 cycle-hub characterisation). The
+function entries of `id 40333` and `id 40334` are left pristine,
+so any other mod that hooks those functions cooperates with this
+plugin instead of competing for the prologue. Pre-patch
+verification reads the 5-byte CALL at each site and refuses to
+patch if another mod has already redirected it; the plugin
+downgrades cleanly to v1.0 runtime-breaker mode in that case.
 
 The LB->LA direction (`id 40285` -> `id 36614` -> `id 38413` ->
 `id 19369`) is intentionally left alone: once the LA->LB edge is
@@ -205,10 +255,16 @@ What to expect during normal play:
 - `acq_slow` rises steadily (a few hundred per minute under load) -
   this is normal LockA/LockB contention from the engine's worker
   pool. None of it is a deadlock.
-- `phase4_passthrough` rises whenever a thread enters
-  `AddToTempChangeList` / `RemoveFromTempChangeList` outside any
-  LockA-acquirer call (the common case - the structural fix lets
-  the call through unchanged).
+- `phase4_passthrough` rises whenever execution reaches one of the
+  two patched cycle-hub call sites (`id 36016+0xdcb`,
+  `id 19372+0x606`) without LockA being held by the calling
+  thread. Since the v2.0.1 call-site refactor this number is
+  small: only callers that traverse the cycle hub itself fire
+  the gate at all. (Before the refactor, when the gates were
+  function-wrap inline hooks on the entries of `id 40333` /
+  `id 40334`, every engine call into those functions paid the
+  gate cost; the call-site patch design narrows that to exactly
+  the cycle path.)
 - `phase4_queued` rises whenever the structural fix detects a
   thread holding LockA and queues a LockB-acquirer call for later.
   Each `phase4_queued` event represents an AB-BA cycle that was

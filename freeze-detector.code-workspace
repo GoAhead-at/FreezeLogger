@@ -5,6 +5,9 @@
 		},
 		{
 			"path": "../../../../../MyFiles/Documents/My Games/Skyrim Special Edition/SKSE"
+		},
+		{
+			"path": "../mods/skyrim-freeze-fix"
 		}
 	],
 	"settings": {}

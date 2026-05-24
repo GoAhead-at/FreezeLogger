@@ -7,11 +7,15 @@ system.
 
 The plugin layers two independent fixes for the same engine bug:
 
-1. **Layer 1 - Structural fix (`Phase4Defer`, v2.0).** Three inline
-   hooks defer the LockB acquirers `id 40333` /
-   `id 40334` whenever the current thread is inside the LockA
-   acquirer `id 19369`. The deferred calls drain on the same
-   thread when LockA is released. The AB-BA cycle cannot form.
+1. **Layer 1 - Structural fix (`Phase4Defer`, v2.0).** One inline
+   hook on the LockA acquirer (`id 19369`) plus two surgical
+   call-site patches inside the cycle hub (`id 36016+0xdcb` ->
+   `id 40334`, `id 19372+0x606` -> `id 40333`) defer the LockB
+   acquirers whenever the current thread is inside `id 19369`.
+   The deferred calls drain on the same thread when LockA is
+   released. The AB-BA cycle cannot form. The function entries
+   of `id 40333` / `id 40334` are left pristine so other mods
+   that hook those functions cooperate with this plugin.
 2. **Layer 2 - Runtime breaker (`AcquireHook` + `WaitGraph` +
    `Breaker`, v1.0).** A surgical inline hook on
    `BSSpinLock::Acquire (id 12210)` detects cycles that form
@@ -76,8 +80,9 @@ all with the same two-lock topology.
 
 ### 2.1 Layer 1 - Structural fix (Phase4Defer)
 
-`Phase4Defer` installs three inline hooks via
-`safetyhook::create_inline`:
+`Phase4Defer` installs one `safetyhook::create_inline` hook on the
+LockA acquirer plus two `Trampoline::write_call<5>` patches at
+specific call sites inside the cycle hub:
 
 ```
                  thread enters id 19369 (LockA acquirer)
@@ -90,9 +95,12 @@ all with the same two-lock topology.
                   return result               // propagate to caller
 
 
-                 thread enters id 40333 / id 40334
-                 (LockB acquirers, dispatched into from
-                 inside id 19369 via id 36016 cycle hub)
+                 thread reaches id 36016+0xdcb  (call to id 40334)
+                 thread reaches id 19372+0x606  (call to id 40333)
+                 (the two call sites are the ONLY paths in the
+                  binary through which id 40333 / id 40334 are
+                  reached while LockA is held; verified during
+                  Phase 4.1 cycle-hub characterisation)
                  ─────────────────────────────────────────
                   if (tl_lockA_depth > 0) {
                       // Defensive synchronous half:
@@ -106,12 +114,38 @@ all with the same two-lock topology.
                       tl_deferred.push_back({kind, pl, actor});
                       return;            // skip LockB acquire
                   }
-                  unsafe_call<void>(original)   // fast path
+                  // pass-through: call the unmodified entry of
+                  // id 40333 / id 40334 directly. Other mods that
+                  // hook those functions still see this call.
+                  g_orig_id4033X(pl, actor);
 ```
 
 Per-thread state is a single `int tl_lockA_depth` and a small
 `std::vector<DeferredCall> tl_deferred` reserved up-front so the hot
 path never allocates.
+
+**Why call-site patches and not function-wraps.** v2.0.1's first
+cut wrapped the entries of `id 40333` and `id 40334` as full
+function inline hooks. That worked but had two costs: (1) every
+engine call into either function paid the gate's TLS load, even
+though the deferral path only ever fires on the cycle path; (2)
+any other mod that hooks `id 40333` or `id 40334` competes with
+our hook for the prologue. The call-site refactor narrows the
+gate to exactly the two call instructions inside the cycle hub
+that reach `id 40333` / `id 40334` while LockA is held; the
+function entries stay pristine, other mods cooperate, and the
+hot-path overhead drops by orders of magnitude. See
+[`../../docs/case-study/25-v2-0-1-callsite-refactor.md`](../../docs/case-study/25-v2-0-1-callsite-refactor.md)
+for the full rationale and the comparison with GarrixWong's
+`skyrim-freeze-fix` that motivated the change.
+
+Pre-patch the install path verifies each 5-byte CALL site
+contains `E8` and a rel32 pointing at the expected
+address-library entry of `id 40333` / `id 40334`. Mismatch
+triggers a clean abort: the plugin downgrades to v1.0
+runtime-breaker mode and logs the actual bytes so the
+disagreement is visible. This is how we cooperate with another
+mod that has already redirected the same call site.
 
 The drain runs on the same thread that originally queued each call,
 so per-thread call ordering is preserved. The drain runs after
@@ -219,8 +253,10 @@ entry/exit.
 
 ### 3.1. `Phase4Defer` (v2.0 structural fix)
 
-The Layer 1 module. Three `safetyhook::create_inline` hooks plus a
-pair of thread-local globals. RVAs are resolved at install time via
+The Layer 1 module. One `safetyhook::create_inline` hook on the
+LockA acquirer plus two `Trampoline::write_call<5>` patches at
+the cycle-hub call sites, plus a pair of thread-local globals.
+RVAs are resolved at install time via
 `REL::Relocation<>{REL::ID(N)}`, the same pattern `AcquireHook`
 uses.
 
@@ -228,36 +264,28 @@ uses.
 thread_local int tl_lockA_depth = 0;
 thread_local std::vector<DeferredCall> tl_deferred;   // reserved 8
 
-void __fastcall HookedLockAAcquirer(void* rcx, void* rdx,
-                                    std::uint8_t r8b,
-                                    std::uintptr_t r9) {
+// Wrap of id 19369. 6 args matching the engine signature
+// (rcx, rdx, r8b, r9 + dword stack arg5 + byte stack arg6).
+// Returns bool. unsafe_call<bool> forwards all 6 args to the
+// trampoline and propagates the bool result back to the caller.
+bool __fastcall HookedLockAAcquirer(
+    void* rcx, void* rdx, std::uint8_t r8b, std::uintptr_t r9,
+    std::uint32_t stack_arg5, std::uint8_t stack_arg6)
+{
     ++tl_lockA_depth;
-    g_hook_lockA_acquirer.unsafe_call<void>(rcx, rdx, r8b, r9);
+    const bool result = g_hook_lockA_acquirer.unsafe_call<bool>(
+        rcx, rdx, r8b, r9, stack_arg5, stack_arg6);
     if (--tl_lockA_depth == 0) DrainDeferredOnExit();
+    return result;
 }
 
+// Call-site gate at id 36016+0xdcb (replaces direct call id 40334).
 // Synchronous half (added in v2.0.1): toggle kInTempChangeList
-// atomically inside the gate. Single fetch_or / fetch_and on the
-// actor's own boolBits word; no LockB needed. Downstream readers
-// of the bit observe the new state immediately. Idempotent w.r.t.
-// the drain's later call to the original.
-void __fastcall HookedAddToTempChangeList(void* pl, void* actor) {
-    if (tl_lockA_depth > 0) {
-        if (actor) {
-            BoolBitsAtomic(actor)->fetch_or(
-                kInTempChangeListMask,
-                std::memory_order_acq_rel);
-        }
-        tl_deferred.push_back({DeferKind::kAdd, pl, actor});
-        Stats::OnPhase4Queued();
-        return;
-    }
-    Stats::OnPhase4PassThrough();
-    g_hook_add.unsafe_call<void>(pl, actor);
-}
-
-void __fastcall HookedRemoveFromTempChangeList(void* pl,
-                                               void* actor) {
+// atomically inside the gate. Single fetch_and on the actor's own
+// boolBits word; no LockB needed. Downstream readers observe the
+// new state immediately. Idempotent w.r.t. the drain's later call
+// to the original.
+void __fastcall HookedRemoveAtCycleHub(void* pl, void* actor) {
     if (tl_lockA_depth > 0) {
         if (actor) {
             BoolBitsAtomic(actor)->fetch_and(
@@ -269,19 +297,46 @@ void __fastcall HookedRemoveFromTempChangeList(void* pl,
         return;
     }
     Stats::OnPhase4PassThrough();
-    g_hook_remove.unsafe_call<void>(pl, actor);
+    g_orig_id40334(pl, actor);   // unmodified function entry
+}
+
+// Call-site gate at id 19372+0x606 (replaces inner call id 40333).
+void __fastcall HookedAddInsideAddWrapper(void* pl, void* actor) {
+    if (tl_lockA_depth > 0) {
+        if (actor) {
+            BoolBitsAtomic(actor)->fetch_or(
+                kInTempChangeListMask,
+                std::memory_order_acq_rel);
+        }
+        tl_deferred.push_back({DeferKind::kAdd, pl, actor});
+        Stats::OnPhase4Queued();
+        return;
+    }
+    Stats::OnPhase4PassThrough();
+    g_orig_id40333(pl, actor);   // unmodified function entry
 }
 ```
 
-`HookedLockAAcquirer`'s 4-argument `__fastcall` signature matches
-`id 19369`'s observed prologue (`rcx`, `rdx`, `r8b`, `r9`). The
-hook function preserves all four registers across the wrapped call
-without modification.
+`HookedLockAAcquirer`'s 6-argument `__fastcall bool` signature
+matches `id 19369`'s observed prologue and epilogue. The wrap
+forwards every register and stack arg verbatim through the
+trampoline and propagates the function's `bool` return back to
+its caller (essential for scripted-animation activators -- see
+doc 24).
+
+`g_orig_id40333` and `g_orig_id40334` are plain function pointers
+to the unmodified entry points (resolved via address library at
+install time). The call-site patches rewrite only the 5-byte CALL
+inside the cycle hub; the function bodies and prologues are not
+touched.
 
 `DrainDeferredOnExit` walks `tl_deferred` to-completion replaying
-each `(kind, pl, actor)` triple via the original trampoline
-pointer. The drain happens on the same thread as the original
-queueing, so per-thread call ordering is preserved.
+each `(kind, pl, actor)` triple via `g_orig_id40333` /
+`g_orig_id40334`. The drain happens on the same thread as the
+original queueing, so per-thread call ordering is preserved.
+Because the drain calls the unmodified function entries, any
+other mod's inline hook on those functions runs during the
+drain too.
 
 The reserve-up-front policy on `tl_deferred` (8 entries by default,
 which is well above any observed in-cycle queue depth) keeps the
@@ -496,7 +551,11 @@ the outcome (both threads drain shortly after the release).
    inert.
 3. Read `WorkerSpinLockFix.toml`.
 4. If `plugin.enabled = false`, stay inert.
-5. `Hooks::Install()`:
+5. `SKSE::AllocTrampoline(64)` -- reserves the SKSE trampoline pool
+   that `Phase4Defer` uses for its two call-site patches (14 bytes
+   each, plus headroom). `AcquireHook` uses safetyhook's own
+   per-hook trampoline and does not consume from this pool.
+6. `Hooks::Install()`:
    - `WaitGraph::Init()` (registry storage).
    - `Breaker::Init()` (recent-cycles map).
    - `AcquireHook::ResolveSpinRetryAddress()` and
@@ -505,13 +564,15 @@ the outcome (both threads drain shortly after the release).
      hook is disabled).
    - `AcquireHook::Install()` (Layer 2 entry-point inline hook),
      gated by `acquire_hook.enabled`.
-   - `Phase4Defer::Install()` (Layer 1 structural fix: three
-     inline hooks on `id 19369` / `id 40333` / `id 40334`), gated
-     by `phase4_defer.enabled`. Fail-soft: a `Phase4Defer` install
-     failure is logged but leaves the v1.0 runtime breaker active.
+   - `Phase4Defer::Install()` (Layer 1 structural fix: one
+     inline hook on `id 19369` plus two call-site patches at
+     `id 36016+0xdcb` and `id 19372+0x606`), gated by
+     `phase4_defer.enabled`. Fail-soft: a `Phase4Defer` install
+     failure (including a refused call-site verification) is
+     logged but leaves the v1.0 runtime breaker active.
    - `Reaper::Install()` if `reaper.enabled = true`.
-6. `Stats::StartPeriodicDump()`.
-7. Register the SKSE message listener.
+7. `Stats::StartPeriodicDump()`.
+8. Register the SKSE message listener.
 
 ### SKSE messages
 
@@ -536,10 +597,13 @@ On a healthy install:
 2. The plugin's banner appears in the log; the
    `phase4_active=true` flag confirms Layer 1 is armed and the
    `acquire_hook_active=true` flag confirms Layer 2 is armed.
-3. During gameplay `acq_slow` and `phase4_passthrough` rise
-   steadily (a few hundred per minute under load) reflecting
-   normal worker-pool activity on LockA/LockB and pass-through
-   `id 40333` / `id 40334` calls outside `id 19369`.
+3. During gameplay `acq_slow` rises steadily (a few hundred per
+   minute under load) reflecting normal worker-pool activity on
+   LockA / LockB. `phase4_passthrough` rises only when execution
+   reaches one of the two patched cycle-hub call sites without
+   LockA being held -- much rarer than v2.0.1's first cut, since
+   that earlier design intercepted *every* engine call into
+   `id 40333` / `id 40334` regardless of cycle relevance.
 4. `phase4_queued` rises whenever the LA->LB cycle would have
    fired and was preempted. `phase4_drained` matches
    `phase4_queued` over long horizons (every queued call is
