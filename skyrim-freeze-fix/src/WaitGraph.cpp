@@ -163,4 +163,24 @@ namespace WorkerSpinLockFix::WaitGraph {
         return true;
     }
 
+    int SnapshotEdges(EdgeView* out, int cap) noexcept {
+        if (out == nullptr || cap <= 0) {
+            return 0;
+        }
+        int n = 0;
+        for (auto& slot : g_slots) {
+            if (n >= cap) {
+                break;
+            }
+            const DWORD tid =
+                slot.tid.load(std::memory_order_acquire);
+            Lock* const wait =
+                slot.waiting_on.load(std::memory_order_acquire);
+            if (tid != 0 && wait != nullptr) {
+                out[n++] = EdgeView{ tid, wait };
+            }
+        }
+        return n;
+    }
+
 }

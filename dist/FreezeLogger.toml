@@ -39,7 +39,11 @@ include_ringbuffer    = true
 max_threads           = 1024
 # Per-thread stack-walk depth. Most stacks are <30 frames; 120 leaves
 # generous headroom for Steam overlay/NVIDIA driver depth without
-# blowing up the report size.
+# blowing up the report size. If a thread's walk hits this cap the
+# Threads section appends `<stack truncated: frame cap reached>` for
+# that thread, so a reader can distinguish a cleanly-walked stack
+# from a truncated one. Raise this if you see truncation markers on
+# threads you actually care about.
 max_frames_per_stack  = 120
 
 

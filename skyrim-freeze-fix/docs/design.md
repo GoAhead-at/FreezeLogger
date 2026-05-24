@@ -444,26 +444,45 @@ confirm such a cycle because only one observation ever arrives.
 
 ### 3.5. `Reaper`
 
-Optional stale-owner backstop. Disabled by default. Periodically:
+Optional stale-owner backstop. Disabled by default. v2.0.3
+redesign. Periodically:
 
-- Enumerates all process threads via Toolhelp32.
-- Identifies threads spinning in `BSSpinLock::Acquire` by stack
-  pattern (the spin-retry RVA, computed at install time as
-  `id 12210 + 0x8a`).
-- Collects plausible BSSpinLock candidates from registers and stack
-  windows.
-- If an observed lock is owned by a TID that is no longer alive,
+- Calls `WaitGraph::SnapshotEdges` to copy the currently-active
+  `(waiter_tid, waiting_on)` pairs into a 64-slot stack buffer.
+- For each edge, dereferences `waiting_on` and reads the
+  `BSSpinLock`'s `(owner, state)` pair via SEH-guarded loads.
+- Filters out transient races (`state == 0`, `owner == 0`,
+  `owner == waiter`) and folds the remaining edges into a moving
+  window keyed on `(waiter, lock, owner)`.
+- For any edge stable for at least `kStaleStableMs` (2 s) whose
+  owner thread has died (`OpenThread + GetExitCodeThread != STILL_ACTIVE`),
   force-releases the lock via `CAS(state -> 0)`.
+- For any edge stable for at least `kLiveProbeMs` (5 s) whose
+  owner is still alive, emits a `LIVE-OWNER WAIT` diagnostic line
+  every `kLiveProbeRepeat` (30 s).
 
 The reaper does no live-cycle detection; that is the
 `AcquireHook + Breaker` path's job. It exists for cases the entry-
-point hook cannot observe: threads that died holding a lock,
-indirect dispatches the hook never sees.
+point hook cannot observe at runtime: threads that died holding a
+lock between the slow-path entry and the cycle check.
 
-It is the only part of the plugin that suspends engine threads,
-makes Psapi calls, or allocates from those code paths, so it is
-also the only part that can plausibly cause load-time stalls on
-heavy modlists. That is why it is off by default.
+**No `SuspendThread`, `GetThreadContext`, `ResumeThread`,
+`Toolhelp32` enumeration, register scanning, or stack scanning on
+the runtime path.** The pre-v2.0.3 design used all of those to
+discover BSSpinLock candidates; that design was retired because
+`GetThreadContext` is not bounded under adversarial kernel states
+and every safe mitigation we considered carried hazards strictly
+worse than the hypothetical hang it would mitigate. The full
+trade-off analysis is in
+`docs/case-study/26-reaper-snapshot-removed.md`.
+
+Coverage trade-off: the reaper now only sees threads that
+traversed the AcquireHook slow path (i.e. threads whose `id 12210`
+call hit `state != 0`). Phase 1.5 confirmed all six known
+acquirers go through `id 12210`, so against the bug this plugin
+targets the loss of coverage is theoretical. Practically, the
+reaper requires `[acquire_hook] enabled = true` to do anything;
+with both disabled the plugin is effectively idle.
 
 ### 3.6. `TestMode`
 
@@ -559,9 +578,11 @@ the outcome (both threads drain shortly after the release).
    - `WaitGraph::Init()` (registry storage).
    - `Breaker::Init()` (recent-cycles map).
    - `AcquireHook::ResolveSpinRetryAddress()` and
-     `AcquireHook::ResolveLockPointers()` unconditionally (the
-     reaper depends on the spin-retry RVA even when the entry-point
-     hook is disabled).
+     `AcquireHook::ResolveLockPointers()` unconditionally. The
+     v2.0.3 reaper no longer reads the spin-retry RVA (it consumes
+     `WaitGraph` edges directly), but resolution stays
+     unconditional so toggling the entry-point hook on at runtime
+     has zero resolution cost.
    - `AcquireHook::Install()` (Layer 2 entry-point inline hook),
      gated by `acquire_hook.enabled`.
    - `Phase4Defer::Install()` (Layer 1 structural fix: one

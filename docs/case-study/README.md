@@ -1,8 +1,8 @@
 # Skyrim SE 1.5.97 Hard-Freeze Investigation - Case Study
 
 **Project:** FreezeLogger SKSE Plugin (+ WorkerSpinLockFix companion)
-**Period:** 2026-05-14 to 2026-05-22 (v2.0 RE + structural fix:
-2026-05-22)
+**Period:** 2026-05-14 to 2026-05-24 (v2.0 RE + structural fix:
+2026-05-22; v2.0.3 reaper safety redesign: 2026-05-24)
 **Modlist:** Nolvus Awakening (Skyrim SE 1.5.97)
 **Outcome:** Root cause identified (AB-BA spinlock inversion in
 Skyrim's worker dispatcher), a working runtime fix shipped as
@@ -14,9 +14,13 @@ activators (skyshards) caused by a 4-arg wrap on a 6-arg engine
 function, plus a v2.0.1 call-site refactor on 2026-05-24 that
 shrinks the LockB-acquirer gates' blast radius from
 function-wraps to two surgical call-site patches inside the
-cycle hub. The v1.0 runtime breaker remains installed in v2.0.x
-as defence-in-depth. See documents 23, 24, and 25 for the
-v2.0.0 / v2.0.1 / v2.0.1-callsite release notes.
+cycle hub, plus a v2.0.3 reaper safety redesign on 2026-05-24
+that retires the `SuspendThread` + `GetThreadContext` snapshot
+path in favour of a `WaitGraph`-edge consumer (so the plugin no
+longer suspends any engine thread on its runtime path). The
+v1.0 runtime breaker remains installed in v2.0.x as
+defence-in-depth. See documents 23, 24, 25, and 26 for the
+v2.0.0 / v2.0.1 / v2.0.1-callsite / v2.0.3 release notes.
 
 This folder contains the long-form case study describing how a custom SKSE
 diagnostics plugin was designed, iterated on across multiple real freezes,
@@ -299,6 +303,20 @@ and ultimately used to localize a deadlock to two specific functions inside
   (`BSSpinLock` AB-BA) and `skyrim-freeze-fix` (`BSReadWriteLock`
   cell-loading deadlocks) so users understand the two are
   complementary, not alternatives.
+- `26-reaper-snapshot-removed.md` - v2.0.3 reaper safety
+  redesign. Documents why the reaper's pre-v2.0.3 design --
+  `CreateToolhelp32Snapshot` + per-thread `SuspendThread` +
+  `GetThreadContext` + register / stack window scan -- was
+  retired and replaced with a `WaitGraph::SnapshotEdges`
+  consumer. Records the trade-off analysis for the
+  `GetThreadContext`-hangs-on-a-suspended-engine-thread failure
+  mode (which a timeout wrapper cannot fix without leaking the
+  suspended thread or corrupting the process via
+  `TerminateThread` on the helper), the resulting coverage
+  trade-off (the reaper now only sees threads that traversed the
+  AcquireHook slow path), and why that trade-off is acceptable
+  given the Phase 1.5 finding that all six known acquirers go
+  through `id 12210`.
 - `appendix-A-evidence.md` - Raw freeze logs, disassembly excerpts, register
   dumps used as evidence in the main narrative.
 

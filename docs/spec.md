@@ -230,7 +230,15 @@ Section order in the report:
      hooked `Main::Update` thread and the hooked `Present` thread — are
      labeled (`[main game thread]`, `[render thread]`) so they're trivial to
      find in the report.
-   - 256-frame cap, 4096-char-per-symbol cap.
+   - 256-frame cap (configurable via
+     `snapshot.max_frames_per_stack`; default 120 in this build),
+     4096-char-per-symbol cap.
+   - If the cap is reached for a thread, the section appends
+     `<stack truncated: frame cap reached>` so the reader knows
+     the walk is incomplete and the deeper frames were elided
+     rather than absent. Threads whose `StackWalk64` terminated
+     normally (walked off the bottom of the stack) do NOT emit
+     this marker.
 
 4. **Loaded modules**
    - Path, base address, size, file version, PE timestamp.
@@ -256,8 +264,12 @@ Section order in the report:
    - Save-blocking flags.
 
 8. **Recent activity (ring buffer)**
-   - Last **100** Papyrus log lines (timestamped at capture).
-   - Last **50** SKSE messaging events (with type code + sender).
+   - Last **100** Papyrus log lines (each stamped with
+     `GetTickCount64()` at push time, so the gap between each
+     line and the freeze instant is preserved in the report).
+   - Last **50** SKSE messaging events (each stamped with
+     `GetTickCount64()` at push time; type code + sender are
+     captured alongside the timestamp).
 
 9. **Mini-dump status** *(only present if mini-dump is enabled)*
    - Path, byte size, MiniDump flags actually used.

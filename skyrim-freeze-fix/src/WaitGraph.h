@@ -68,6 +68,29 @@ namespace WorkerSpinLockFix::WaitGraph {
     bool VerifyCycleStillPresent(
         const CycleParticipant* cycle, int cycle_len) noexcept;
 
+    // One observed wait edge: thread `waiter` is currently sitting in the
+    // AcquireHook slow path on `waiting_on`. Reaper consumes batches of
+    // these to find stale-owner edges without needing to suspend any
+    // engine thread.
+    struct EdgeView {
+        DWORD waiter{ 0 };
+        Lock* waiting_on{ nullptr };
+    };
+
+    // Copy the currently-active wait edges into `out`, capped at `cap`.
+    // Returns the number of edges written. Lock-free, allocation-free,
+    // safe to call from any thread. Skips slots whose `tid` is zero or
+    // whose `waiting_on` is null.
+    //
+    // The snapshot is racy by design: a slot's `waiting_on` may be
+    // cleared by the owning thread between the load here and the
+    // caller's read of the lock fields, in which case the caller will
+    // see the lock as "not held" and discard the edge. That race is
+    // benign because the only consumer (Reaper) treats observed edges
+    // as candidates that must remain stable for `kStaleStableMs`
+    // before any action is taken.
+    int SnapshotEdges(EdgeView* out, int cap) noexcept;
+
     // Idempotent. Sets up registry storage. Must be called before EnterSlow
     // is invoked from any thread.
     void Init();

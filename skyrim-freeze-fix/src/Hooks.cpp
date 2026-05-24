@@ -16,8 +16,12 @@ namespace WorkerSpinLockFix::Hooks {
         WaitGraph::Init();
         Breaker::Init();
 
-        // The reaper depends on the spin-retry address even when the
-        // AcquireHook itself is disabled, so resolve it unconditionally.
+        // Resolve the spin-retry address and the LockA / LockB pointers
+        // up-front. AcquireHook owns these; the v2.0.3 Reaper redesign
+        // no longer reads the spin-retry RVA (it consumes WaitGraph
+        // edges directly), but we still resolve it unconditionally so
+        // that turning AcquireHook on later via config has zero
+        // resolution cost.
         AcquireHook::ResolveSpinRetryAddress();
         AcquireHook::ResolveLockPointers();
 
@@ -28,13 +32,17 @@ namespace WorkerSpinLockFix::Hooks {
             } else {
                 logs::critical(
                     "AcquireHook installation FAILED. Cycle detection is "
-                    "NOT active. The reaper backstop will still run if "
-                    "enabled.");
+                    "NOT active. The reaper backstop, if enabled, will "
+                    "see no edges to act on (the WaitGraph is only "
+                    "populated by the AcquireHook slow path).");
             }
         } else {
             logs::warn(
                 "AcquireHook disabled by config "
-                "(acquire_hook.enabled = false). Plugin runs reaper-only.");
+                "(acquire_hook.enabled = false). Plugin runs reaper-only "
+                "if [reaper] is enabled, but the reaper depends on the "
+                "WaitGraph populated by AcquireHook -- with both off "
+                "the plugin is effectively idle.");
         }
 
         bool phase4_active = false;

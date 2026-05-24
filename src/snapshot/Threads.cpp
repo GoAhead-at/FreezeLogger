@@ -247,6 +247,23 @@ namespace FreezeLogger::Snapshot::Threads {
                                         frameNo, FormatFrame(pc, sym));
                     ++frameNo;
                 }
+
+                // The loop has three exit paths:
+                //   1. frameNo == kMaxFrames -> hit the configured cap;
+                //      the deeper frames exist but were not emitted.
+                //   2. StackWalk64 returned FALSE -> walk completed
+                //      cleanly OR errored out partway through.
+                //   3. AddrPC.Offset == 0 -> walked off the bottom of
+                //      the stack (normal terminator).
+                //
+                // Only (1) needs an explicit marker. Without it the
+                // reader cannot tell a 256-frame thread that walked
+                // to completion from a 256-frame thread that was
+                // truncated. With the marker the report is
+                // self-describing.
+                if (frameNo >= kMaxFrames) {
+                    a_os << "    <stack truncated: frame cap reached>\n";
+                }
             }   // release Symbols::Lock before any further work
 
             // ----- Per-thread non-volatile register dump --------------------

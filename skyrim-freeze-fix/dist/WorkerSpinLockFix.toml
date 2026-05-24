@@ -156,19 +156,30 @@ diagnostic_logging = false
 # owner patterns (owner thread is dead). The surgical AB-BA breaker
 # handles live-owner cycles directly.
 #
+# v2.0.3 redesign: the reaper now consumes a snapshot of the
+# WaitGraph wait edges populated by the AcquireHook slow path. It no
+# longer enumerates process threads, no longer calls SuspendThread /
+# GetThreadContext / ResumeThread, and no longer scans registers and
+# stack windows for plausible BSSpinLock candidates. The full
+# rationale for retiring the suspension-based scan -- including why
+# adding a timeout wrapper around GetThreadContext is strictly worse
+# than the hypothetical hang it would mitigate -- is in
+# docs/case-study/26-reaper-snapshot-removed.md.
+#
+# As a result, the reaper now requires `[acquire_hook] enabled =
+# true` to do anything useful. With AcquireHook off the WaitGraph is
+# empty and every reaper tick is a no-op.
+#
 # DISABLED by default: the surgical hook is sufficient for the
-# documented engine bug, and the reaper is the only piece of the
-# plugin that suspends engine threads + makes Psapi calls + allocates
-# from those code paths, so it is also the only piece that can
-# plausibly cause a load-time hang on heavy modlists. Re-enable
-# manually if you want the stale-owner backstop in addition to the
-# surgical hook.
+# documented engine bug, and even with the new design the reaper is
+# the only background thread the plugin spawns. Re-enable manually
+# if you want the stale-owner backstop in addition to the surgical
+# hook.
 enabled = false
 
 # Reaper poll interval (milliseconds). Stale-owner deadlocks last
 # forever, so long latency between scans is acceptable; the steady-
-# state cost of a full thread enumeration + per-thread
-# SuspendThread/GetThreadContext at this interval is negligible.
+# state cost of a WaitGraph snapshot at this interval is negligible.
 interval_ms = 30000
 
 [test_mode]
