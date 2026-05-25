@@ -3,43 +3,46 @@
 SKSE plugin for **Skyrim SE 1.5.97** that fixes a documented AB-BA
 spinlock inversion in the engine's worker dispatcher.
 
-**v2.0.1 (internal)** ships a structural fix layered on top of the
-v1.0.0 runtime breaker. One inline hook (a wrap on the LockA
-acquirer at `id 19369`) plus two surgical call-site patches inside
-the cycle hub (`id 36016+0xdcb` and `id 19372+0x606`) defer the
-LockB-protected portion of `id 40333` / `id 40334` whenever the
-current thread is inside the LockA acquirer, so the AB-BA cycle
-simply cannot form. The wrap on `id 19369` matches the engine
-function's real signature: 6 args (`rcx`, `rdx`, `r8b`, `r9`, plus
-a dword stack arg 5 at `[rsp+0x28]` and a byte stack arg 6 at
-`[rsp+0x30]`) and a `bool` return, all forwarded verbatim through
+**v2.0.3** is the current release. It ships a structural fix
+layered on top of the v1.0.0 runtime breaker, plus a redesigned
+optional reaper backstop that no longer suspends any engine
+thread on the runtime path.
+
+One inline hook (a wrap on the LockA acquirer at `id 19369`) plus
+two surgical call-site patches inside the cycle hub
+(`id 36016+0xdcb` and `id 19372+0x606`) defer the LockB-protected
+portion of `id 40333` / `id 40334` whenever the current thread is
+inside the LockA acquirer, so the AB-BA cycle simply cannot form.
+The wrap on `id 19369` matches the engine function's real
+signature: 6 args (`rcx`, `rdx`, `r8b`, `r9`, plus a dword stack
+arg 5 at `[rsp+0x28]` and a byte stack arg 6 at `[rsp+0x30]`) and
+a `bool` return, all forwarded verbatim through
 `unsafe_call<bool>`. The per-actor `kInTempChangeList` bit toggle
 runs synchronously in the gate as defensive scaffolding -- it
 eliminates any stale-flag window for readers that might observe
 bit 9 inside the LockA scope without adding any lock contention.
+
 The v1.0.0 runtime breaker (surgical hook on `BSSpinLock::Acquire`,
 per-thread wait-for graph, time-based confirmation flow,
 force-release via `InterlockedCompareExchange`) is retained as
 defence-in-depth: if the structural fix misses any cycle path the
 runtime breaker still catches and force-releases.
 
-> v2.0.0 silently broke scripted-animation activators (skyshards
-> being the most visible case). Three diagnostic cuts of v2.0.1
-> were needed to find the actual cause: the wrap declared 4 args
-> for an engine function that takes 6, so the trampoline read
-> garbage for arg 5 and arg 6 every invocation. The earlier
-> hypotheses (stale-bit window, dropped `bool` return) turned
-> out to be incorrect; the bit-toggle and bool-return fixes
-> from those passes are kept as defensive scaffolding. The
-> 6-arg wrap signature is the load-bearing fix. See
-> [`../docs/case-study/24-v2-0-1-skyshard-regression-fix.md`](../docs/case-study/24-v2-0-1-skyshard-regression-fix.md).
->
-> A subsequent v2.0.1 refactor (also internal) replaces the two
-> entry-gates on `id 40333` / `id 40334` with surgical call-site
-> patches at `id 36016+0xdcb` and `id 19372+0x606`. Same gate
-> semantics, narrower blast radius, and other mods that hook
-> `id 40333` / `id 40334` directly continue to work. See
-> [`../docs/case-study/25-v2-0-1-callsite-refactor.md`](../docs/case-study/25-v2-0-1-callsite-refactor.md).
+The optional stale-owner reaper was rewritten in v2.0.3 to consume
+the `WaitGraph` populated by the runtime breaker instead of
+suspending engine threads via `SuspendThread + GetThreadContext +
+Toolhelp32` enumeration. The runtime path no longer suspends any
+engine thread for any reason. See
+[`../docs/case-study/26-reaper-snapshot-removed.md`](../docs/case-study/26-reaper-snapshot-removed.md).
+
+### Version history
+
+| Version | Status | Summary |
+|---|---|---|
+| v1.0.0 | Released 2026-05-21 | Runtime breaker only: surgical hook on `BSSpinLock::Acquire`, lock-free wait-for graph, time-based confirmation, force-release via `InterlockedCompareExchange`. |
+| v2.0.0 | Released 2026-05-22, superseded | Adds the structural fix as Layer 1. Three function-wrap inline hooks on `id 19369` / `id 40333` / `id 40334`. Silently broke scripted-animation activators (skyshards) because the wrap on `id 19369` declared 4 args for a 6-arg engine function, so arg 5 / arg 6 were read off uninitialised stack every invocation. |
+| v2.0.1 | Internal only | Three diagnostic cuts. Final fix: 6-arg `bool`-returning `unsafe_call<bool>` wrap signature; defensive bit-toggle and bool-return paths kept. Subsequent refactor in the same version label rebases the LockB gates from function-wraps onto two surgical `Trampoline::write_call<5>` patches at `id 36016+0xdcb` and `id 19372+0x606`. See [`../docs/case-study/24-v2-0-1-skyshard-regression-fix.md`](../docs/case-study/24-v2-0-1-skyshard-regression-fix.md) and [`../docs/case-study/25-v2-0-1-callsite-refactor.md`](../docs/case-study/25-v2-0-1-callsite-refactor.md). |
+| v2.0.3 | **Current.** Released 2026-05-24 | Reaper redesigned around `WaitGraph::SnapshotEdges`. All `SuspendThread` / `GetThreadContext` / `ResumeThread` / `Toolhelp32` / register+stack scanning code is gone from the runtime path. Owner-aliveness probe uses `OpenThread + GetExitCodeThread`. Coverage trade-off: the reaper now requires `[acquire_hook] enabled = true` to populate the wait graph. Phase 1.5 confirmed all six known acquirers go through `id 12210`, so the loss of coverage is theoretical against the bug this plugin targets. See [`../docs/case-study/26-reaper-snapshot-removed.md`](../docs/case-study/26-reaper-snapshot-removed.md). |
 
 ## Scope
 
@@ -169,11 +172,28 @@ With the structural fix active and healthy the runtime breaker should
 fire, that signals a cycle path the structural fix missed and the
 runtime breaker still catches it.
 
-A separate stale-owner reaper acts as an optional backstop for cases
-neither the entry-point hook nor the structural fix can observe
-(threads that died holding a lock, indirect dispatches no hook sees).
-It is disabled by default; the structural fix + AcquireHook breaker
-pipeline is sufficient for the documented engine bug.
+A separate stale-owner reaper acts as an optional backstop for the
+case neither the entry-point hook nor the structural fix can
+observe at runtime: a thread that died still holding a lock that
+another thread is now waiting on. As of v2.0.3 the reaper consumes
+a snapshot of the `WaitGraph` populated by the runtime breaker
+(`AcquireHook`'s slow path) and probes owner aliveness via
+`OpenThread + GetExitCodeThread`. **It does not call
+`SuspendThread`, `GetThreadContext`, `ResumeThread`, or
+`Toolhelp32` enumeration on the runtime path** — the previous
+suspension-based design was retired because `GetThreadContext` is
+not bounded under adversarial kernel states and every safe
+mitigation considered carried hazards strictly worse than the
+hypothetical hang it would mitigate. The full trade-off analysis
+is in
+[`../docs/case-study/26-reaper-snapshot-removed.md`](../docs/case-study/26-reaper-snapshot-removed.md).
+
+The reaper is disabled by default; the structural fix +
+AcquireHook breaker pipeline is sufficient for the documented
+engine bug. With the reaper enabled it now requires
+`[acquire_hook] enabled = true` to do anything (the wait graph it
+reads is populated by the runtime breaker's slow path); with both
+disabled the plugin is effectively idle.
 
 The plugin ships with a **synthetic AB-BA test harness** that can be
 enabled in the TOML to validate the breaker end-to-end on
@@ -228,8 +248,9 @@ is optional telemetry.
 | `[breaker]`        | `break_enabled`             | `true`    | If `false`, the breaker logs cycles but never force-releases anything (detect-only). |
 | `[breaker]`        | `confirmation_window_ms`    | `2`       | How long a cycle must remain present before being broken. |
 | `[breaker]`        | `log_cycle_events`          | `true`    | Log every cycle observation, confirmation, and break attempt. |
-| `[reaper]`         | `enabled`                   | `false`   | Stale-owner backstop. Off by default. |
-| `[reaper]`         | `interval_ms`               | `30000`   | Stale-owner scan interval (ms). |
+| `[reaper]`         | `enabled`                   | `false`   | Stale-owner backstop (v2.0.3 WaitGraph-based scan; consumes wait edges populated by `[acquire_hook]`). Off by default. |
+| `[reaper]`         | `interval_ms`               | `30000`   | Reaper poll interval (ms). |
+| `[phase4_defer]`   | `diagnostic_logging`        | `false`   | Per-call diagnostic logging for the structural fix. Enable when triaging a regression; leave off in steady-state play. |
 | `[test_mode]`      | `enabled`                   | `false`   | Synthetic AB-BA validation harness. See below. |
 
 All keys are documented inline in the shipped TOML.
@@ -276,6 +297,15 @@ What to expect during normal play:
 - `breaks_done` stays at `0` unless such a cycle fires AND persists
   past the confirmation window (i.e. it's a real deadlock, not a
   near-miss).
+- `reaper:` fields are zero unless `[reaper] enabled = true`. With
+  the v2.0.3 redesign the field semantics shifted slightly:
+  `threads` is the count of active `WaitGraph` slots scanned this
+  tick (no longer a Toolhelp32 enumeration of all process
+  threads), `spinners` matches it (every WaitGraph slot is a
+  thread sitting in the AcquireHook slow path), `candidates` is
+  the count of edges with a held foreign owner, and
+  `stale_reaped` increments only when a CAS force-released a
+  lock whose owner thread had died.
 
 The healthy signature is `phase4_queued > 0, breaks_done = 0`: the
 structural fix is preempting cycles and the runtime breaker is
@@ -408,7 +438,11 @@ idle and the engine runs unmodified. As individual escape hatches:
 - `phase4_defer.enabled = false` disables the v2.0 structural fix.
   The v1.0 runtime breaker still detects and breaks cycles.
 - `acquire_hook.enabled = false` disables the v1.0 entry-point hook.
-  The v2.0 structural fix continues to preempt cycles.
+  The v2.0 structural fix continues to preempt cycles. **Note:**
+  with v2.0.3, turning off `acquire_hook` also makes the optional
+  reaper a no-op even when `[reaper] enabled = true`, because the
+  reaper reads the `WaitGraph` populated by AcquireHook's slow
+  path. This is logged at install time.
 - `breaker.break_enabled = false` runs the runtime breaker in
   detect-only mode (logs cycles, never force-releases).
 - All three off plus the reaper off makes the plugin completely
