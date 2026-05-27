@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.26)
 
 project(FreezeLogger
-    VERSION       0.1.0
+    VERSION       0.2.0
     DESCRIPTION   "SKSE plugin that detects and diagnoses Skyrim hard freezes"
     HOMEPAGE_URL  ""
     LANGUAGES     CXX
@@ -40,6 +40,7 @@ set(SOURCES
     src/snapshot/MainWaitProbe.cpp
     src/snapshot/System.cpp
     src/snapshot/MiniDump.cpp
+    src/snapshot/Verdict.cpp
     src/snapshot/WaitGraph.cpp
 )
 
@@ -66,6 +67,7 @@ set(HEADERS
     src/snapshot/MainWaitProbe.h
     src/snapshot/System.h
     src/snapshot/MiniDump.h
+    src/snapshot/Verdict.h
     src/snapshot/WaitGraph.h
 )
 
@@ -91,6 +93,7 @@ target_link_libraries(${PROJECT_NAME}
         tomlplusplus::tomlplusplus
         DbgHelp
         Psapi
+        Version
 )
 
 target_compile_definitions(${PROJECT_NAME}

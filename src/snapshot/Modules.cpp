@@ -15,7 +15,35 @@ namespace FreezeLogger::Snapshot::Modules {
             std::uintptr_t  base;
             std::uintptr_t  size;
             std::wstring    path;
+            std::string     fileVersion;   // "A.B.C.D" from VS_FIXEDFILEINFO,
+                                            // empty when unreadable
         };
+
+        // Best-effort read of the file's VS_FIXEDFILEINFO. Empty string on
+        // failure (binary lacks a VERSIONINFO resource, or the resource is
+        // malformed). Linked via Version.lib in CMakeLists.txt.
+        std::string ReadFileVersion(const wchar_t* a_path) {
+            DWORD handle = 0;
+            const DWORD size = ::GetFileVersionInfoSizeW(a_path, &handle);
+            if (size == 0) return {};
+            std::vector<std::byte> buffer(size);
+            if (!::GetFileVersionInfoW(a_path, 0, size, buffer.data())) return {};
+            VS_FIXEDFILEINFO* info = nullptr;
+            UINT len = 0;
+            if (!::VerQueryValueW(buffer.data(), L"\\",
+                                  reinterpret_cast<LPVOID*>(&info), &len) ||
+                !info || len < sizeof(VS_FIXEDFILEINFO))
+            {
+                return {};
+            }
+            const auto hi = info->dwFileVersionMS;
+            const auto lo = info->dwFileVersionLS;
+            return std::format("{}.{}.{}.{}",
+                               (hi >> 16) & 0xffff,
+                               hi & 0xffff,
+                               (lo >> 16) & 0xffff,
+                               lo & 0xffff);
+        }
 
         std::wstring LowerInvariant(std::wstring s) {
             std::transform(s.begin(), s.end(), s.begin(),
@@ -73,6 +101,7 @@ namespace FreezeLogger::Snapshot::Modules {
                 reinterpret_cast<std::uintptr_t>(mi.lpBaseOfDll),
                 static_cast<std::uintptr_t>(mi.SizeOfImage),
                 path,
+                ReadFileVersion(path),
             });
         }
 
@@ -86,10 +115,14 @@ namespace FreezeLogger::Snapshot::Modules {
                 pathLower.find(L"\\skse\\plugins\\") != std::wstring::npos;
 
             a_os << std::format(
-                "  [{:016x}-{:016x}] {} {}\n",
+                "  [{:016x}-{:016x}] {} {}",
                 m.base, m.base + m.size,
                 isSksePlugin ? "[skse]" : "      ",
                 Narrow(m.path));
+            if (!m.fileVersion.empty()) {
+                a_os << "  (FileVersion " << m.fileVersion << ")";
+            }
+            a_os << "\n";
         }
     }
 

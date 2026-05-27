@@ -5,7 +5,7 @@
 **Language:** C++20
 **Target runtime:** Skyrim Special Edition **1.5.97** (hard-pinned)
 **Engine binding:** CommonLibSSE-NG (covers 1.5.97; future SE/AE/VR support is a port, not a rebuild)
-**Status:** Draft v0.2 (post-design-grilling)
+**Status:** Draft v0.3 (post first-real-freeze corpus; introduces freeze classification + HDT-SMP-aware probes)
 
 ---
 
@@ -21,6 +21,7 @@
 | Resolved-freeze handling | Annotate the existing report with `Resolved at T+Xs`; do not emit a duplicate |
 | Mini-dump | Code in v1, **default OFF**, TOML toggleable, retain last 5 |
 | Snapshot scope (v1) | §1 Header, §2 System, §3 Threads + stacks, §4 Modules, §5 Papyrus VM, §6 *lite* (player only), §7 Engine, §8 Recent-activity ring buffer |
+| Snapshot additions (v0.2) | §1.5 Freeze classification (top-of-report verdict), worker-pool aggregation, Singleton-B hex-dump ASCII annotation, writer-still-live double-sample, HDT-SMP stack-presence detector, Loaded modules `FileVersion` enrichment |
 | Deferred to v2 | §6 *full* (nearest-N actors), JSON sidecar |
 | Synthetic trigger | Debug-build hotkey (`VK_PAUSE`) **+** env-var one-shot, both gated by `FL_DEBUG_TRIGGERS=ON`. Optional `FL_FAKE_HEARTBEAT=1` for testing the pipeline before hooks are pinned. |
 | Symbol resolution | Microsoft public symbol server, local cache, URL embedded in every report header |
@@ -143,7 +144,9 @@ Key properties:
 | `Watchdog` | Background thread; detects stalls; classifies; orchestrates snapshots; handles annotate-on-resolve |
 | `Symbols` | DbgHelp init with MS symsrv, mutex-guarded resolver |
 | `Snapshot::Threads` | Stack-walks every thread in the process |
-| `Snapshot::Modules` | Enumerates loaded DLLs (versions, paths, base addresses) |
+| `Snapshot::Verdict` | Classifies the freeze at the top of the report — runs the cheap subset of `MainWaitProbe`'s detection (wait-site, Singleton-B chain, HDT-SMP stack presence, worker-pool count) and emits a single block the human reader can read first before scrolling through hundreds of KB of thread dumps. See §6.1.5. |
+| `Snapshot::MainWaitProbe` | Long-form audit trail for the main thread's wait site (Singleton-A id 34554 lock primitive, or Singleton-B +0xc38130 event-source wrapper). Used to be the sole verdict surface; as of v0.2 it remains the deep-dive while `Snapshot::Verdict` lifts the headline. |
+| `Snapshot::Modules` | Enumerates loaded DLLs (base address, size, path, **FileVersion** as of v0.2) |
 | `Snapshot::Papyrus` | Captures VM stats: active stacks, suspended scripts, queue |
 | `Snapshot::AnimGraph` | Captures **player-only** animation-graph state (lite) |
 | `Snapshot::Engine` | Captures cell, worldspace, player position, time of day, pause flags |
@@ -183,12 +186,20 @@ Key properties:
                 if max(ages) > threshold and not cooling:
                     classify (which thread crossed first / by how much)
                     Snapshot orchestrator:
-                      Threads → Modules → Papyrus → AnimGraph
-                      → Engine → System → RingBuffer → MiniDump?
+                      Verdict → System → Threads → Modules
+                      → Papyrus → AnimGraph → Engine
+                      → MainWaitProbe → WaitGraph
+                      → RingBuffer → MiniDump?
                     Reporter.write(report)
                     enter cooldown
                 else if cooling and frozen-thread resumed:
                     Reporter.annotate_resolved(latest_report, T+Xs)
+
+Verdict runs first because the human reader benefits from a one-block
+classification (freeze class, confidence, suggested triage doc) before
+scrolling through hundreds of KB of thread dumps. Verdict is intentionally
+the *cheap* subset of the diagnostics already gathered by MainWaitProbe
+and WaitGraph; the long-form audit lives further down the report.
 ```
 
 Output target:
@@ -217,13 +228,50 @@ Section order in the report:
    - `Symbol server:` line carrying the symsrv URL string for downstream
      re-symbolication.
 
-2. **System**
+2. **Freeze classification** *(added in v0.2)*
+   - Single block, ~10–15 lines, written immediately after the header so it
+     is the first thing the human reader sees.
+   - Fields:
+     - `Freeze class:` — one of the recognised classes, see below.
+     - `Confidence:` — `high` / `medium` / `low` based on how many of the
+       fingerprint sub-checks matched.
+     - `Site:` — `A` (Singleton-A id 34554 lock primitive), `B` (Singleton-B
+       +0xc38130 event-source wrapper), or `unrecognised`.
+     - `Singleton-B chain:` — `intact` / `zeroed-at-step-N` / `not-walked`
+       when Site == B; omitted otherwise.
+     - `HDT-SMP on main stack:` — `yes (frame at hdtsmp64.dll+0xXXXXX)` /
+       `no` when a frame inside `hdtsmp64.dll` is found above main's RSP.
+     - `HDT-SMP worker pool:` — `N idle (all parked on hdtsmp64.dll+0xXXXXXX)`
+       when `N >= 1` worker threads are sitting on the recognised
+       per-worker auto-reset event RVA.
+     - `Suggested triage:` — relative path to the most relevant
+       `docs/case-study/*.md` for this class.
+   - Recognised classes (extensible):
+     - `BSSpinLock AB-BA (WorkerSpinLockFix domain)` — Site A AND a thread
+       is spinning at `SkyrimSE+0x132c5a` AND the spinner's lock owner ==
+       main TID. Verdict points at `docs/case-study/06-root-cause.md`.
+     - `HDT-SMP / Site-B Papyrus event-source wait` — Site B AND a frame
+       inside `hdtsmp64.dll` is on main's stack. Verdict points at
+       `docs/case-study/27-hdtsmp-deadlock-report.md`.
+     - `Site-B Papyrus event-source wait (no HDT-SMP fingerprint)` —
+       Site B without the HDT-SMP frame; bug class is the same engine
+       race but the proximate caller is something else.
+     - `Site-A worker-ack wait` — Site A without the BSSpinLock cycle;
+       worker did not signal completion for an unrelated reason.
+     - `Unrecognised` — main is in a kernel wait we don't have a
+       fingerprint for; long-form sections still emit fully.
+   - The detection re-uses the cheap probes from `MainWaitProbe` (RIP/RSP
+     check, Singleton-B chain walk, BSSpinLock-owner scan) — it does *not*
+     duplicate the deep diagnostics. The point is to surface the verdict
+     at the top of the report; the audit trail still lives in §9.
+
+3. **System**
    - OS version, total/available RAM, page-file usage.
    - Process working set, private bytes, handle count.
    - CPU model, core count, current load.
    - GPU adapter & driver version (best-effort via DXGI).
 
-3. **Threads**
+4. **Threads**
    - For every thread: TID, OS thread name (if set via `SetThreadDescription`),
      priority, suspend count.
    - **Full call stack** with symbol resolution. The two known threads — the
@@ -240,38 +288,71 @@ Section order in the report:
      normally (walked off the bottom of the stack) do NOT emit
      this marker.
 
-4. **Loaded modules**
-   - Path, base address, size, file version, PE timestamp.
+5. **Loaded modules**
+   - Path, base address, size, file version (PE `VS_FIXEDFILEINFO`,
+     emitted as `FileVersion=A.B.C.D` next to each row as of v0.2 — useful
+     for tying a freeze to the exact build of `hdtsmp64.dll`, etc.).
    - Modules under `Data\SKSE\Plugins` are flagged so SKSE plugin DLLs are
      visible at a glance.
 
-5. **Papyrus VM**
+6. **Papyrus VM**
    - Active stack count, suspended count, frozen count.
    - Top N longest-running stacks (script + function name).
    - Pending event queue depth.
 
-6. **Animation graph (lite)**
+7. **Animation graph (lite)**
    - Player only.
    - Current behavior graph file, current animation event, last animation
      event, time in current animation state.
    - Flag if player has been in a transition for > 1 s.
 
-7. **Engine state**
+8. **Engine state**
    - Current cell + worldspace EditorIDs.
    - Player position / orientation.
    - In-game time, real time since startup.
    - Pause flags (menu open, console open, fast-travel in progress, etc.).
    - Save-blocking flags.
 
-8. **Recent activity (ring buffer)**
-   - Last **100** Papyrus log lines (each stamped with
-     `GetTickCount64()` at push time, so the gap between each
-     line and the freeze instant is preserved in the report).
-   - Last **50** SKSE messaging events (each stamped with
-     `GetTickCount64()` at push time; type code + sender are
-     captured alongside the timestamp).
+9. **MainWaitProbe (long-form)**
+   - The deep-dive that `Verdict` (item 2) draws its headline from.
+   - Walks Singleton-A field-by-field when Site A is hit; walks Singleton-B
+     chain step-by-step when Site B is hit.
+   - The Singleton-B instance hex dump **inline-annotates each qword that
+     decodes as printable ASCII** (v0.2). Engine event-source-holder
+     keys (`Weekday`, `Water`, `Ranged`, `Cast Magic Event`, `Crime Gold
+     Event`, …) live inline in the singleton struct and were previously
+     visible only as raw qwords like `0x007961646b656557`. They now read
+     `0x007961646b656557 "Weekday"` directly in the report.
+   - The **writer-still-live probe** (Site B sampled twice with a ~50 ms
+     gap) lives in `Snapshot::Verdict` rather than here — it's a
+     verdict-time signal, not a long-form audit signal — and its result
+     is rendered as `(writer: settled)` / `(writer: still mutating)` in
+     the §1.5 Freeze classification block. The MainWaitProbe section
+     still walks the chain once and dumps it field-by-field.
+   - BSSpinLock-owner search (Site A AB-BA cycle detection) — unchanged
+     from v0.1; surfaces the lock pointer + owner TID for every spinner.
+   - The **HDT-SMP stack-presence detector** also lives in `Snapshot::Verdict`
+     for the same reason (cheap probe, headline-shaped output).
 
-9. **Mini-dump status** *(only present if mini-dump is enabled)*
+10. **WaitGraph (cross-thread)**
+    - Per-handle wait table: every distinct kernel HANDLE in the process
+      and the list of TIDs parked on it, plus the queried event type/state.
+    - For each handle: cross-thread search for *other* threads that hold
+      the handle anywhere in non-volatile registers. These are the producer
+      / signaller candidates.
+    - Final "classic dispatch+wait deadlock" summary when main's handle has
+      zero external waiters / referencers — the smoking-gun signature of
+      a Site-B orphaned wait.
+
+11. **Recent activity (ring buffer)**
+    - Last **100** Papyrus log lines (each stamped with
+      `GetTickCount64()` at push time, so the gap between each
+      line and the freeze instant is preserved in the report).
+    - Last **50** SKSE messaging events (each stamped with
+      `GetTickCount64()` at push time; type code + sender are
+      captured alongside the timestamp).
+
+12. **Mini-dump status** *(only present if mini-dump is enabled)*
    - Path, byte size, MiniDump flags actually used.
    - Failure reason if `MiniDumpWriteDump` returned an error.
 
@@ -448,12 +529,15 @@ freeze-detector/
 │   ├── SkseMessageTap.{h,cpp}
 │   ├── DebugTriggers.{h,cpp}        # compiled out unless FL_DEBUG_TRIGGERS=ON
 │   └── snapshot/
+│       ├── Verdict.{h,cpp}          # v0.2 top-of-report freeze classification
 │       ├── Threads.{h,cpp}
 │       ├── Modules.{h,cpp}
 │       ├── Papyrus.{h,cpp}
 │       ├── AnimGraph.{h,cpp}        # player-only, lite
 │       ├── Engine.{h,cpp}
 │       ├── System.{h,cpp}
+│       ├── MainWaitProbe.{h,cpp}    # long-form Site-A / Site-B audit
+│       ├── WaitGraph.{h,cpp}        # cross-thread handle wait table
 │       └── MiniDump.{h,cpp}
 ├── tests/
 │   ├── CMakeLists.txt
@@ -590,11 +674,29 @@ packaging script in-repo so the muscle memory exists when we do.
      zero crashes, < 5 MB plugin log, no measurable FPS regression
      (≤ 0.5 % in a fixed benchmark scene).
 
-7. **Unit tests (Catch2)**
+7. **Verdict classification (v0.2)**
+   - For each historical freeze report in
+     `docs/case-study/27-hdtsmp-deadlock-report.md`'s data set, replay
+     against the current build (or, if replay is not available, manually
+     compare): the Verdict block must classify Site B + HDT-SMP correctly
+     and the suggested triage link must resolve.
+   - For a synthetic Site-A freeze (constructed via the test harness in
+     `skyrim-freeze-fix`), Verdict must classify `BSSpinLock AB-BA` and
+     point at `06-root-cause.md`.
+   - For the synthetic stall path (no real bug class), Verdict must classify
+     `Unrecognised` and not lie about a fingerprint match.
+
+8. **Unit tests (Catch2)**
    - `Heartbeat`: atomic store/load semantics, monotonicity.
    - `Watchdog`: stall detection given mocked clock + heartbeat;
      cooldown semantics; resolve-annotation logic.
    - `RingBuffer`: thread-safe push/snapshot, ordering, capacity bound.
+   - `Verdict::Classify` (v0.2): given a synthesised
+     `Verdict::Observations` POD (Site A/B flags, Singleton-B chain state,
+     HDT-SMP frame presence, worker-pool count, BSSpinLock cycle flag),
+     the classifier returns the expected `Verdict::Class` enum and
+     confidence for every recognised class. Pure function, no game-state
+     dependency, ideal for table-driven testing.
 
 ---
 

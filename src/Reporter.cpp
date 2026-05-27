@@ -11,6 +11,7 @@
 #include "snapshot/Papyrus.h"
 #include "snapshot/System.h"
 #include "snapshot/Threads.h"
+#include "snapshot/Verdict.h"
 #include "snapshot/WaitGraph.h"
 #include "RingBuffer.h"
 
@@ -145,6 +146,13 @@ namespace FreezeLogger::Reporter {
         WriteHeader(os, a_stalledThread, a_mainAgeMs, a_renderAgeMs);
 
         const auto& cfg = Config::Get();
+
+        // Verdict runs first so the human reader sees the freeze
+        // classification before scrolling through hundreds of KB of
+        // thread dumps. It is intentionally the cheap subset of the
+        // diagnostics that the long-form sections below (MainWaitProbe,
+        // WaitGraph) compute in full.
+        Section(os, "Freeze classification", [](auto& s){ Snapshot::Verdict::Write(s); });
 
         if (cfg.snapshot.include_system) {
             Section(os, "System",         [](auto& s){ Snapshot::System::Write(s);    });

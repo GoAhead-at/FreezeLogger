@@ -360,10 +360,49 @@ namespace FreezeLogger::Snapshot::MainWaitProbe {
             }
         }
 
+        // Render a qword as up to 8 ASCII characters when its bytes are
+        // printable. Returns the empty string when the qword does not
+        // start with a plausible ASCII letter, so vtable / heap pointer
+        // qwords are not noisily mis-rendered.
+        //
+        // The engine event-source-holder layout puts named event keys
+        // ("Weekday", "Water", "Cast Magic Event", "Crime Gold Event")
+        // inline within the singleton instance, so the existing hex
+        // dump shows them as raw qwords. Annotating those qwords inline
+        // saves the analyst from manually ASCII-decoding them.
+        std::string DecodeQwordAsAscii(std::uintptr_t a_qword) noexcept {
+            // Reject zero outright.
+            if (a_qword == 0) return {};
+            // First byte (low byte of the qword) must look like a
+            // printable ASCII letter — anything else and we treat the
+            // qword as non-text and skip the annotation.
+            const auto firstByte = static_cast<unsigned char>(a_qword & 0xff);
+            const bool firstLooksLikeText =
+                (firstByte >= 'A' && firstByte <= 'Z') ||
+                (firstByte >= 'a' && firstByte <= 'z') ||
+                 firstByte == '_';
+            if (!firstLooksLikeText) return {};
+
+            std::string out;
+            out.reserve(8);
+            for (int i = 0; i < 8; ++i) {
+                const auto byte = static_cast<unsigned char>(
+                    (a_qword >> (i * 8)) & 0xff);
+                if (byte == 0) break;
+                if (byte < 0x20 || byte > 0x7e) return {};
+                out.push_back(static_cast<char>(byte));
+            }
+            return out;
+        }
+
         // Hex-dump arbitrary memory window. Used when we want to inspect a
         // singleton instance whose layout we don't fully understand yet —
         // the vtable pointer at offset 0 is the most-valuable single qword
         // since it ties the instance back to a class in SkyrimSE.exe.
+        // Each qword that decodes as printable ASCII gets the decoded
+        // string appended in quotes so engine event names are visible in
+        // the dump (the Singleton-B event-source-holder layout exposes
+        // these inline — see Appendix A of the case-study report).
         void DumpMemoryWindow(
             std::ostream&  a_os,
             std::uintptr_t a_addr,
@@ -379,9 +418,16 @@ namespace FreezeLogger::Snapshot::MainWaitProbe {
                         i * sizeof(std::uintptr_t), seh);
                     return;
                 }
-                a_os << std::format(
-                    "      +0x{:03x}  0x{:016x}\n",
-                    i * sizeof(std::uintptr_t), v);
+                const auto ascii = DecodeQwordAsAscii(v);
+                if (ascii.empty()) {
+                    a_os << std::format(
+                        "      +0x{:03x}  0x{:016x}\n",
+                        i * sizeof(std::uintptr_t), v);
+                } else {
+                    a_os << std::format(
+                        "      +0x{:03x}  0x{:016x}  \"{}\"\n",
+                        i * sizeof(std::uintptr_t), v, ascii);
+                }
             }
         }
 
