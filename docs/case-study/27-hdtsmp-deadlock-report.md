@@ -1,11 +1,87 @@
-# 27. HDT-SMP-UP main-thread event-wait deadlock
+# 27. Skyrim `WaitForJobTask` hang (HDT-SMP-UP on stack, but not the cause)
 
 **Date observed:** 2026-05-26 to 2026-05-27 (six freezes captured)
-**Affected mod:** `Faster HDT-SMP-UP` (community SE/AE fork of HDT-SMP)
-**Status:** Open. Reported here as a bug-class characterisation suitable for
-forwarding to the upstream maintainer. **Not** a `WorkerSpinLockFix` issue —
-the WSF telemetry is clean across all six freezes; the bug lives entirely
-inside `hdtsmp64.dll`.
+**Module visible on the stack:** `Faster HDT-SMP-UP` (community SE/AE fork of HDT-SMP)
+**Status:** Open. Reclassified 2026-05-28 after maintainer response — see §0
+below. **Not** a `WorkerSpinLockFix` issue (WSF telemetry is clean across
+all six freezes), and **not** an HDT-SMP-internal bug (the FSMP frame is
+the upstream `Main::Update` hook, not the cause). The wait itself is
+inside Skyrim's task pool.
+
+---
+
+## 0. Maintainer response (added 2026-05-28)
+
+The Faster HDT-SMP-UP maintainer was forwarded an earlier draft of this
+report (the version which attributed the deadlock to FSMP's event
+protocol — §5, §7, Appendix A). Their reply, verbatim:
+
+> This is because FSMP hooks the main update. It's not the cause, will
+> just show up as the upstream to problems downstream.
+>
+> The cause of this crash is Skyrim getting stuck on:
+>
+> ```c
+> cVar5 = FUN_1405763e0(1);
+> if (cVar5 != '\0') {
+>     WaitForJobTask_140C38130(0,1);
+> }
+> ```
+>
+> Waiting on jobs before rendering.
+>
+> Very common place to hang on skyrim. Either deadlock, or IO/etc is
+> hanging.
+> But unrelated to FSMP — we don't touch Skyrim's task pool.
+
+### What this corrects
+
+| Previous claim (§5, §7, App A) | Corrected understanding |
+|---|---|
+| `hdtsmp64.dll+0x42f0e` is "the immediate caller of Skyrim's wait-helper chain" — implying HDT-SMP initiates the wait. | `hdtsmp64.dll+0x42f0e` is the saved return address inside HDT-SMP's **`Main::Update` hook trampoline**. FSMP intercepts `Main::Update`, calls the original function, and on return Skyrim itself reaches the `WaitForJobTask` site below. FSMP is innocent infrastructure on the stack. |
+| The function at `SkyrimSE+0xc38130` is "the Singleton-B event-source wrapper" / a Papyrus-style event-source helper. | The function at `SkyrimSE+0xc38130` is Skyrim's **`WaitForJobTask`** helper. Main calls it after `FUN_1405763e0(1)` returns non-zero, i.e. "there are jobs in flight, block until they drain before continuing the frame." |
+| HDT-SMP is "publishing into and then clearing" the dispatch struct. | The dispatch struct (`Singleton-B @ SkyrimSE+0x2f26a70`) belongs to **Skyrim's task pool**, not to HDT-SMP. The maintainer is explicit: *"we don't touch Skyrim's task pool"*. Whoever cleared it is in Skyrim itself or in another mod that does touch the task pool. |
+| Bug class is "HDT-SMP / Site-B Papyrus event-source wait". | Bug class is **"Skyrim main-thread `WaitForJobTask` hang"** — a well-known Skyrim deadlock class. Common causes per the maintainer: either a deadlock somewhere in the job pool, or IO/etc. stalling a job that the main thread is now waiting on. |
+| Investigation targets are inside `hdtsmp64.dll`. | Investigation targets are inside Skyrim's task pool: what jobs were in flight at the wait instant, why one or more of them never completed, and whether any *other* SKSE plugin in the modlist touches the task pool. |
+
+### What this report still tells us
+
+The mechanical observations stand — they were correct evidence, just
+mis-attributed:
+
+- Main thread is parked on `WaitForSingleObject` with a `NotificationEvent`
+  handle in `RBX`, no other thread in the process references that handle.
+- The `Singleton-B` chain at `SkyrimSE+0x2f26a70 -> [+0x08] -> ...` is
+  zeroed at freeze time but main read it as non-zero (otherwise the
+  `WaitForJobTask` wrapper would have early-returned without sleeping),
+  so something tore the chain down after main parked. This *is* a
+  publish-then-tear-down race; the producer just lives in Skyrim's task
+  pool, not in FSMP.
+- HDT-SMP's worker pool (frame `#02 hdtsmp64.dll+0x14572d` on 16 threads)
+  is idle, which is the correct steady state for FSMP workers when no
+  job is queued. They are downstream of main being stuck, not upstream.
+- Five of six freezes land on a cell-load boundary — the engine's task
+  pool is heavily exercised during cell transitions (asset streaming,
+  Havok world rebuild, actor scene teardown).
+
+### What changed downstream
+
+- FreezeLogger v0.2.1 ships verdict labels that name this class
+  **"Skyrim `WaitForJobTask` hang (FSMP on main's stack is the upstream
+  `Main::Update` hook, not the cause)"** rather than the old
+  *"HDT-SMP / Site-B Papyrus event-source wait"*.
+- The `MainWaitProbe` long-form audit now identifies `+0xc38130` as
+  `WaitForJobTask` and notes the producer is Skyrim's task pool.
+- The ASCII annotation on the Singleton-B hex dump (`"Weekday"`,
+  `"Water"`, `"Ranged"`, `"Cast Magic Event"`, …) is **kept but
+  caveated**: those bytes may be coincidental ASCII inside a job-id /
+  hash / inline padding rather than real engine event keys. The
+  rendering is still useful when bytes really do form a string.
+
+§§1–10 below are preserved unedited for historical record. Where they say
+*"HDT-SMP is the cause"* / *"Singleton-B is an event-source holder"* /
+*"the bug is inside hdtsmp64.dll"*, read those claims through this §0
+correction.
 
 ---
 
