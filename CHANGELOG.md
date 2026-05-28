@@ -7,6 +7,137 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 Diagnostic-only output format changes are not treated as a breaking SemVer event
 unless they remove or rename an existing section — fields may grow without notice.
 
+## [0.3.0] — 2026-05-28
+
+Forward-looking diagnostic release. v0.2.x finally pinpointed the wait
+site as Skyrim's `WaitForJobTask` (case-study 27 §0), but every
+post-freeze sample we have shows the task-pool chain *already torn
+down* — singleton `+0x08` zeroed, sub-array gone, handle table empty —
+so there's no signal in the frozen state alone about *which* job got
+stuck. v0.3 closes that gap by capturing a **healthy baseline of the
+task-pool chain ≈1 Hz** while the game is running normally, then
+**diffs it against the frozen state** at freeze time. The next captured
+freeze should be the first one where we can name the slot that died.
+
+No behaviour change for callers; the new section is additive in the
+report and the new per-frame work on the main thread is gated behind a
+1-in-60 atomic increment + modulo on non-capture frames (sub-nanosecond
+in the steady state).
+
+### Added
+- `FreezeLogger::TaskPoolBaseline` — lock-protected ring-of-1 holding
+  the most recently captured healthy state of Singleton-B
+  (`SkyrimSE+0x2f26a70`). Written from the `Main::Update` hook on a
+  1-in-60 throttle (≈1 Hz at 60 fps), read by `Snapshot::TaskPool` at
+  freeze time. Captures 32 qwords of the singleton instance, 16 qwords
+  of the sub-array, and per-entry: 8 qwords of the dispatch struct +
+  8 qwords of its handle table. SEH-bounded; faults zero the affected
+  slots, never the whole sample. Sub-microsecond mutex hold on both
+  writer and reader paths.
+- `Snapshot::TaskPool` — new freeze-report section rendered after
+  Engine state and before WaitGraph. Compares the most recent healthy
+  baseline against a fresh frozen-time capture of the same chain, with
+  per-qword `<-- DIFF` markers on lines that changed. Renders four
+  layers: (1) the global slot, (2) the singleton instance with v0.2
+  ASCII annotation, (3) the sub-array, (4) for each populated entry
+  the dispatch struct + handle table. Frozen entries are pointer-matched
+  against baseline entries so reallocated slots are flagged. Closes
+  with an `Investigation hint` paragraph telling the analyst how to
+  cross-reference main's wait HANDLE (from the Threads section) against
+  the baseline's handle tables to identify which queue index main was
+  waiting on.
+- `TaskPoolBaseline::Init()` call wired into `MainHook::Install` so
+  baseline capture arms automatically when the Main::Update hook
+  installs. Logs the resolved SkyrimSE base + capture cadence.
+
+### Changed
+- `docs/spec.md` v0.4 → v0.5:
+  - Status line bumped, new "Snapshot additions (v0.3)" row added to the
+    Resolved Decisions cheat-sheet.
+  - `Snapshot orchestrator` data flow now reads
+    `...MainWaitProbe → TaskPool → WaitGraph...`.
+  - New parallel section documenting the per-frame
+    `TaskPoolBaseline::MaybeCapture()` call inside the Main::Update hook.
+  - New §6.10 "Task-pool snapshot" describing the four-layer baseline /
+    frozen comparison, the age-of-baseline reporting, and the cost
+    budget (~256 SEH-guarded qword reads per capture; sub-nanosecond
+    per-frame steady-state cost).
+  - WaitGraph / Recent activity / Mini-dump renumbered to 11 / 12 / 13.
+  - §8 Project Layout adds `src/TaskPoolBaseline.{h,cpp}` and
+    `src/snapshot/TaskPool.{h,cpp}`.
+  - §11 Validation Plan: new item 8 for the task-pool snapshot
+    (synthetic + real-freeze acceptance criteria).
+- `CMakeLists.txt`: project version bumped to **0.3.0**;
+  `TaskPoolBaseline.cpp` + `snapshot/TaskPool.cpp` added to `SOURCES`,
+  `TaskPoolBaseline.h` + `snapshot/TaskPool.h` added to `HEADERS`.
+
+### Verdict / classification
+- Unchanged from 0.2.1. The new section is purely additive; classifier
+  enum identifiers, labels, and confidence values are all stable.
+
+### Migration notes
+- None. Drop the new DLL in place; existing `FreezeLogger.toml` files
+  continue to work unchanged. Old reports remain comparable since
+  every existing section is preserved in place and order; the
+  Task-pool snapshot is wedged between Engine and Wait graph.
+
+---
+
+## [0.2.1] — 2026-05-28
+
+Reclassification release. The Faster HDT-SMP-UP maintainer reviewed the
+v0.2.0 case-study report and identified the Site-B wait
+(`SkyrimSE+0xc38130`) as Skyrim's `WaitForJobTask` — i.e. main thread
+"waiting on jobs before rendering" — *not* a Papyrus event-source wait.
+Frames inside `hdtsmp64.dll` on main's stack are the FSMP `Main::Update`
+hook trampoline (upstream infrastructure), not the cause of the wait.
+All verdict labels and supporting documentation are corrected to reflect
+this. No behavioural change to the probes themselves; only the
+interpretation, labels, and diagnosis text changed.
+
+### Changed
+- `Snapshot::Verdict` labels (enum identifiers unchanged for log-grep
+  stability):
+  - `HdtsmpSiteB` → "Skyrim WaitForJobTask hang (FSMP on main's stack is
+    the upstream Main::Update hook, not the cause)" (was: "HDT-SMP /
+    Site-B Papyrus event-source wait").
+  - `SiteBNoHdtsmp` → "Skyrim WaitForJobTask hang (no HDT-SMP / FSMP
+    frame on stack)" (was: "Site-B Papyrus event-source wait (no
+    HDT-SMP fingerprint)").
+- `Snapshot::Verdict::SiteString` for Site B now reads
+  `B (Skyrim WaitForJobTask @ SkyrimSE+0xc38130)`.
+- `MainWaitProbe` Site-B intro now identifies `+0xc38130` as
+  `WaitForJobTask` ("Skyrim's job-pool wait — *are there outstanding
+  tasks? if yes, block until they drain*"). Verdict block in the
+  long-form audit names Skyrim's task pool as the producer and notes
+  the FSMP frame is just the upstream `Main::Update` hook trampoline.
+- `docs/spec.md` v0.3 → v0.4. Replaced every "Papyrus event-source"
+  wording with "WaitForJobTask" / "job-pool" wording. Refreshed the
+  freeze-class enumeration in §6.2 and the validation step in §11.7.
+- `docs/case-study/27-hdtsmp-deadlock-report.md` gained a new top-level
+  **§0 Maintainer response** section with the verbatim quote, a
+  "what this corrects" mapping table, and a note that §§1–10 are
+  preserved unedited for historical record but should be read through
+  the §0 correction.
+
+### Clarified
+- The inline ASCII annotation on the Singleton-B hex dump
+  (`"Weekday"`, `"Water"`, `"Ranged"`, `"Cast Magic Event"`, …) is
+  **kept as a debug aid** but now carries a one-line caveat in the
+  report: those qwords may be coincidental ASCII inside a job-id /
+  hash / inline padding rather than real engine event keys. The
+  v0.2.0 case-study text reading them as "engine event names" relied
+  on the now-superseded event-source-holder interpretation.
+
+### Internal
+- Plugin version: `0.2.0 → 0.2.1` (`CMakeLists.txt`).
+- No new files, no new dependencies, no API changes. `Class` enum
+  identifiers stay the same so any downstream log grep against
+  `HdtsmpSiteB` / `SiteBNoHdtsmp` keeps working — only the rendered
+  label text moved.
+
+---
+
 ## [0.2.0] — 2026-05-28
 
 This release is the first iteration informed by a real captured freeze corpus
@@ -131,5 +262,6 @@ and writes a human-readable report.
   belongs to. Addressed in v0.2.0.
 - `Loaded modules` table omits `FileVersion`. Addressed in v0.2.0.
 
+[0.2.1]: ./docs/spec.md
 [0.2.0]: ./docs/spec.md
 [0.1.0]: ./docs/spec.md

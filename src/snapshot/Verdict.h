@@ -18,7 +18,7 @@ namespace FreezeLogger::Snapshot::Verdict {
         // Wait-site detection — same algorithm MainWaitProbe uses, run on
         // main thread's saved CONTEXT and a small stack window above RSP.
         bool inSiteA = false;   // Singleton-A id 34554 lock primitive
-        bool inSiteB = false;   // Singleton-B +0xc38130 event-source wrapper
+        bool inSiteB = false;   // Skyrim WaitForJobTask @ SkyrimSE+0xc38130
 
         // Singleton-B chain walk: which step (if any) of the
         // *(SkyrimSE+0x2f26a70) -> [+8][0] -> *[0] -> vtable[1] chain
@@ -53,10 +53,20 @@ namespace FreezeLogger::Snapshot::Verdict {
     };
 
     // ===== Classified verdict ==========================================
+    //
+    // The enum identifiers are stable across releases for source / log-grep
+    // compatibility; the human-readable labels rendered into reports are
+    // reclassified in v0.2.1 after the Faster HDT-SMP-UP maintainer
+    // identified Site-B as Skyrim's `WaitForJobTask` ("waiting on jobs
+    // before rendering"), not a Papyrus event-source wait. The historical
+    // identifier `HdtsmpSiteB` is kept because the *fingerprint* still
+    // matters — a Site-B wait with an `hdtsmp64.dll` frame on main's
+    // stack is the common shape — but the label now says the FSMP frame
+    // is the upstream `Main::Update` hook, not the cause of the wait.
     enum class Class {
         SpinlockAbBa,          // BSSpinLock AB-BA (WorkerSpinLockFix domain)
-        HdtsmpSiteB,           // HDT-SMP / Site-B Papyrus event-source wait
-        SiteBNoHdtsmp,         // Site-B wait without an HDT-SMP fingerprint
+        HdtsmpSiteB,           // Skyrim WaitForJobTask hang, FSMP on main stack
+        SiteBNoHdtsmp,         // Skyrim WaitForJobTask hang, no FSMP on stack
         SiteAWorkerAck,        // Site-A worker-ack wait, no spinlock cycle
         Unrecognised,
     };

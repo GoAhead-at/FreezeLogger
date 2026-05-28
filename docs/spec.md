@@ -5,7 +5,7 @@
 **Language:** C++20
 **Target runtime:** Skyrim Special Edition **1.5.97** (hard-pinned)
 **Engine binding:** CommonLibSSE-NG (covers 1.5.97; future SE/AE/VR support is a port, not a rebuild)
-**Status:** Draft v0.3 (post first-real-freeze corpus; introduces freeze classification + HDT-SMP-aware probes)
+**Status:** Draft v0.5 (introduces task-pool baseline ring + Task-pool snapshot section so the next captured freeze can name the stuck job)
 
 ---
 
@@ -22,6 +22,7 @@
 | Mini-dump | Code in v1, **default OFF**, TOML toggleable, retain last 5 |
 | Snapshot scope (v1) | §1 Header, §2 System, §3 Threads + stacks, §4 Modules, §5 Papyrus VM, §6 *lite* (player only), §7 Engine, §8 Recent-activity ring buffer |
 | Snapshot additions (v0.2) | §1.5 Freeze classification (top-of-report verdict), worker-pool aggregation, Singleton-B hex-dump ASCII annotation, writer-still-live double-sample, HDT-SMP stack-presence detector, Loaded modules `FileVersion` enrichment |
+| Snapshot additions (v0.3) | §6.10 Task-pool snapshot (Singleton-B layer-by-layer diff against the last healthy baseline captured at ≈1 Hz from the Main::Update hook). Designed to surface *which slot of the task pool was torn down*, so the next captured freeze can name the stuck job. |
 | Deferred to v2 | §6 *full* (nearest-N actors), JSON sidecar |
 | Synthetic trigger | Debug-build hotkey (`VK_PAUSE`) **+** env-var one-shot, both gated by `FL_DEBUG_TRIGGERS=ON`. Optional `FL_FAKE_HEARTBEAT=1` for testing the pipeline before hooks are pinned. |
 | Symbol resolution | Microsoft public symbol server, local cache, URL embedded in every report header |
@@ -145,7 +146,9 @@ Key properties:
 | `Symbols` | DbgHelp init with MS symsrv, mutex-guarded resolver |
 | `Snapshot::Threads` | Stack-walks every thread in the process |
 | `Snapshot::Verdict` | Classifies the freeze at the top of the report — runs the cheap subset of `MainWaitProbe`'s detection (wait-site, Singleton-B chain, HDT-SMP stack presence, worker-pool count) and emits a single block the human reader can read first before scrolling through hundreds of KB of thread dumps. See §6.1.5. |
-| `Snapshot::MainWaitProbe` | Long-form audit trail for the main thread's wait site (Singleton-A id 34554 lock primitive, or Singleton-B +0xc38130 event-source wrapper). Used to be the sole verdict surface; as of v0.2 it remains the deep-dive while `Snapshot::Verdict` lifts the headline. |
+| `Snapshot::MainWaitProbe` | Long-form audit trail for the main thread's wait site (Singleton-A id 34554 lock primitive, or Singleton-B = Skyrim's `WaitForJobTask` helper at SkyrimSE+0xc38130 — identified by the Faster HDT-SMP-UP maintainer, see `docs/case-study/27` §0). Used to be the sole verdict surface; as of v0.2 it remains the deep-dive while `Snapshot::Verdict` lifts the headline. |
+| `TaskPoolBaseline` (v0.3) | Lock-protected ring-of-1 holding the most recently captured healthy state of Skyrim's task-pool holder (Singleton-B). Written from the `Main::Update` hook on a 1-in-60 throttle (≈1 Hz at 60 fps); read by `Snapshot::TaskPool` at freeze time. Captures 32 qwords of the singleton instance, 16 qwords of the sub-array, and for each of the first 8 sub-array entries an 8-qword entry window + 8-qword handle-table window. |
+| `Snapshot::TaskPool` (v0.3) | Renders the task-pool snapshot section: compares the last healthy baseline against a frozen-time capture of the same chain, with per-qword diff markers. Goal: expose which layer of the chain (global slot, singleton, sub-array, dispatch struct, handle table) was torn down between the last healthy frame and the freeze instant. See §6.10. |
 | `Snapshot::Modules` | Enumerates loaded DLLs (base address, size, path, **FileVersion** as of v0.2) |
 | `Snapshot::Papyrus` | Captures VM stats: active stacks, suspended scripts, queue |
 | `Snapshot::AnimGraph` | Captures **player-only** animation-graph state (lite) |
@@ -188,12 +191,18 @@ Key properties:
                     Snapshot orchestrator:
                       Verdict → System → Threads → Modules
                       → Papyrus → AnimGraph → Engine
-                      → MainWaitProbe → WaitGraph
+                      → MainWaitProbe → TaskPool → WaitGraph
                       → RingBuffer → MiniDump?
                     Reporter.write(report)
                     enter cooldown
                 else if cooling and frozen-thread resumed:
                     Reporter.annotate_resolved(latest_report, T+Xs)
+
+In parallel, on the main thread:
+              Main::Update hook (every frame):
+                Heartbeat::TickMain()
+                TaskPoolBaseline::MaybeCapture()    [v0.3, throttled 1-in-60]
+                ...original Main::Update...
 
 Verdict runs first because the human reader benefits from a one-block
 classification (freeze class, confidence, suggested triage doc) before
@@ -236,7 +245,7 @@ Section order in the report:
      - `Confidence:` — `high` / `medium` / `low` based on how many of the
        fingerprint sub-checks matched.
      - `Site:` — `A` (Singleton-A id 34554 lock primitive), `B` (Singleton-B
-       +0xc38130 event-source wrapper), or `unrecognised`.
+       SkyrimSE+0xc38130 = Skyrim's `WaitForJobTask`), or `unrecognised`.
      - `Singleton-B chain:` — `intact` / `zeroed-at-step-N` / `not-walked`
        when Site == B; omitted otherwise.
      - `HDT-SMP on main stack:` — `yes (frame at hdtsmp64.dll+0xXXXXX)` /
@@ -250,12 +259,15 @@ Section order in the report:
      - `BSSpinLock AB-BA (WorkerSpinLockFix domain)` — Site A AND a thread
        is spinning at `SkyrimSE+0x132c5a` AND the spinner's lock owner ==
        main TID. Verdict points at `docs/case-study/06-root-cause.md`.
-     - `HDT-SMP / Site-B Papyrus event-source wait` — Site B AND a frame
-       inside `hdtsmp64.dll` is on main's stack. Verdict points at
-       `docs/case-study/27-hdtsmp-deadlock-report.md`.
-     - `Site-B Papyrus event-source wait (no HDT-SMP fingerprint)` —
-       Site B without the HDT-SMP frame; bug class is the same engine
-       race but the proximate caller is something else.
+     - `Skyrim WaitForJobTask hang (FSMP on main's stack is the upstream
+       Main::Update hook, not the cause)` — Site B AND a frame inside
+       `hdtsmp64.dll` is on main's stack. Per the Faster HDT-SMP-UP
+       maintainer (case-study 27 §0), the FSMP frame is the upstream
+       `Main::Update` hook trampoline; the actual wait is in Skyrim's
+       task pool. Verdict points at `docs/case-study/27-hdtsmp-deadlock-report.md`.
+     - `Skyrim WaitForJobTask hang (no HDT-SMP / FSMP frame on stack)` —
+       Site B without the HDT-SMP frame; same engine wait, different
+       upstream hook (or vanilla path).
      - `Site-A worker-ack wait` — Site A without the BSSpinLock cycle;
        worker did not signal completion for an unrelated reason.
      - `Unrecognised` — main is in a kernel wait we don't have a
@@ -318,11 +330,13 @@ Section order in the report:
    - Walks Singleton-A field-by-field when Site A is hit; walks Singleton-B
      chain step-by-step when Site B is hit.
    - The Singleton-B instance hex dump **inline-annotates each qword that
-     decodes as printable ASCII** (v0.2). Engine event-source-holder
-     keys (`Weekday`, `Water`, `Ranged`, `Cast Magic Event`, `Crime Gold
-     Event`, …) live inline in the singleton struct and were previously
-     visible only as raw qwords like `0x007961646b656557`. They now read
-     `0x007961646b656557 "Weekday"` directly in the report.
+     decodes as printable ASCII** (v0.2). The annotation is a *debug
+     aid*: since v0.2.1, Singleton-B is known to be Skyrim's task-pool
+     holder (not a Papyrus event-source holder), so printable bytes such
+     as `"Weekday"`, `"Water"`, `"Ranged"`, `"Cast Magic Event"` may be
+     coincidental ASCII inside a job-id / hash / inline padding rather
+     than real engine event keys. The report prints a one-line caveat
+     above the dump for the reader.
    - The **writer-still-live probe** (Site B sampled twice with a ~50 ms
      gap) lives in `Snapshot::Verdict` rather than here — it's a
      verdict-time signal, not a long-form audit signal — and its result
@@ -334,7 +348,40 @@ Section order in the report:
    - The **HDT-SMP stack-presence detector** also lives in `Snapshot::Verdict`
      for the same reason (cheap probe, headline-shaped output).
 
-10. **WaitGraph (cross-thread)**
+10. **Task-pool snapshot (v0.3)**
+    - Compares the most recent **healthy baseline** (captured at ≈1 Hz from
+      the `Main::Update` hook by `TaskPoolBaseline::MaybeCapture`) against
+      a fresh frozen-time capture of the same chain (Singleton-B @
+      `SkyrimSE+0x2f26a70` → `[+0x08]` sub-array → per-index dispatch
+      struct → handle table).
+    - Renders four layers, each as a baseline / frozen pair with per-qword
+      `<-- DIFF` markers on lines that changed:
+      - **Layer 1**: the global slot value `*(SkyrimSE+0x2f26a70)`.
+      - **Layer 2**: 32 qwords of the singleton instance (with the v0.2
+        ASCII annotation, caveated per case-study 27 §0 as a debug aid
+        only — bytes may be coincidental ASCII inside a job-id / hash).
+      - **Layer 3**: 16 qwords of the sub-array (each entry is a pointer
+        to a per-queue-index dispatch struct).
+      - **Layer 4**: for each populated sub-array entry, 8 qwords of the
+        dispatch struct plus 8 qwords of its handle table. Frozen entries
+        are matched against baseline entries by pointer so reallocated
+        slots are explicitly flagged.
+    - Reports the age of the baseline (`T-X.Y s before frozen capture`)
+      so the analyst can see whether the chain was still healthy 1 s ago
+      and torn down 200 ms ago, vs. torn down minutes earlier.
+    - Includes a closing **Investigation hint** block that tells the
+      analyst how to cross-reference main's wait HANDLE (from the Threads
+      section) against the baseline's handle table to identify which
+      queue index main was waiting on. The producer that should have
+      signaled it lives somewhere in Skyrim's task pool (the FSMP
+      maintainer's identification — see case-study 27 §0).
+    - Cost budget: the freeze-time capture is bounded by ~256 SEH-guarded
+      qword reads (singleton 32 + sub-array 16 + per-entry 8×8 + per-handle-table
+      8×8 = 240). The baseline capture in `MainHook` runs the same bound
+      ≈1×/s; the per-frame cost on the other 59 frames is one atomic
+      increment + modulo (sub-nanosecond).
+
+11. **WaitGraph (cross-thread)**
     - Per-handle wait table: every distinct kernel HANDLE in the process
       and the list of TIDs parked on it, plus the queried event type/state.
     - For each handle: cross-thread search for *other* threads that hold
@@ -344,7 +391,7 @@ Section order in the report:
       zero external waiters / referencers — the smoking-gun signature of
       a Site-B orphaned wait.
 
-11. **Recent activity (ring buffer)**
+12. **Recent activity (ring buffer)**
     - Last **100** Papyrus log lines (each stamped with
       `GetTickCount64()` at push time, so the gap between each
       line and the freeze instant is preserved in the report).
@@ -352,7 +399,7 @@ Section order in the report:
       `GetTickCount64()` at push time; type code + sender are
       captured alongside the timestamp).
 
-12. **Mini-dump status** *(only present if mini-dump is enabled)*
+13. **Mini-dump status** *(only present if mini-dump is enabled)*
    - Path, byte size, MiniDump flags actually used.
    - Failure reason if `MiniDumpWriteDump` returned an error.
 
@@ -528,6 +575,7 @@ freeze-detector/
 │   ├── PapyrusLogTap.{h,cpp}
 │   ├── SkseMessageTap.{h,cpp}
 │   ├── DebugTriggers.{h,cpp}        # compiled out unless FL_DEBUG_TRIGGERS=ON
+│   ├── TaskPoolBaseline.{h,cpp}     # v0.3 healthy-state ring captured from Main::Update
 │   └── snapshot/
 │       ├── Verdict.{h,cpp}          # v0.2 top-of-report freeze classification
 │       ├── Threads.{h,cpp}
@@ -537,6 +585,7 @@ freeze-detector/
 │       ├── Engine.{h,cpp}
 │       ├── System.{h,cpp}
 │       ├── MainWaitProbe.{h,cpp}    # long-form Site-A / Site-B audit
+│       ├── TaskPool.{h,cpp}         # v0.3 healthy-vs-frozen layer-by-layer diff
 │       ├── WaitGraph.{h,cpp}        # cross-thread handle wait table
 │       └── MiniDump.{h,cpp}
 ├── tests/
@@ -678,15 +727,32 @@ packaging script in-repo so the muscle memory exists when we do.
    - For each historical freeze report in
      `docs/case-study/27-hdtsmp-deadlock-report.md`'s data set, replay
      against the current build (or, if replay is not available, manually
-     compare): the Verdict block must classify Site B + HDT-SMP correctly
-     and the suggested triage link must resolve.
+     compare): the Verdict block must classify the freeze as
+     `Skyrim WaitForJobTask hang (FSMP on main's stack is the upstream
+     Main::Update hook, not the cause)` and the suggested triage link
+     must resolve.
    - For a synthetic Site-A freeze (constructed via the test harness in
      `skyrim-freeze-fix`), Verdict must classify `BSSpinLock AB-BA` and
      point at `06-root-cause.md`.
    - For the synthetic stall path (no real bug class), Verdict must classify
      `Unrecognised` and not lie about a fingerprint match.
 
-8. **Unit tests (Catch2)**
+8. **Task-pool snapshot (v0.3)**
+   - With `-DFL_DEBUG_TRIGGERS=ON`, boot Skyrim, load a save, idle for
+     ≥ 2 s (so `TaskPoolBaseline::MaybeCapture` runs at least once), then
+     trigger a synthetic stall via `VK_PAUSE`.
+   - The resulting `freeze_<ts>_main.log` must contain a `Task pool snapshot`
+     section with: (a) a non-zero `Last healthy baseline captured` age, (b)
+     the four-layer baseline / frozen comparison, and (c) the
+     `Investigation hint` footer.
+   - On a real-world WaitForJobTask freeze (e.g. another instance of the
+     case-study 27 corpus), the baseline must show a populated sub-array
+     while the frozen sample shows `null` or a torn-down value, with
+     `<-- DIFF` markers on the affected qwords.
+   - No crash, no hang, no measurable per-frame overhead (≤ 0.5 % FPS
+     delta in the soak scene from §11.6).
+
+9. **Unit tests (Catch2)**
    - `Heartbeat`: atomic store/load semantics, monotonicity.
    - `Watchdog`: stall detection given mocked clock + heartbeat;
      cooldown semantics; resolve-annotation logic.

@@ -24,7 +24,8 @@ namespace FreezeLogger::Snapshot::Verdict {
         constexpr std::uintptr_t kLockFnHiRVA   = 0x576620;
         constexpr std::uintptr_t kLockReturnRVA = 0x5765ff;
 
-        // Site B — +0xc38130 event-source wrapper.
+        // Site B — +0xc38130 = Skyrim's `WaitForJobTask` (id'd by FSMP
+        // maintainer, 2026-05-28); Singleton-B is its task-pool holder.
         constexpr std::uintptr_t kSingletonBPtrRVA  = 0x2f26a70;
         constexpr std::uintptr_t kWaitWrapperLoRVA  = 0xc38130;
         constexpr std::uintptr_t kWaitWrapperHiRVA  = 0xc3815b;
@@ -552,8 +553,14 @@ namespace FreezeLogger::Snapshot::Verdict {
     // Pure classifier — testable in isolation. The ordering matters:
     // BSSpinLock AB-BA wins when both Site A and a main-owned spinner
     // are present (that's the WSF class regardless of how Singleton-A
-    // looks); HDT-SMP / Site-B requires both Site B AND the HDT-SMP
-    // fingerprint on the stack; the bare Site-B class is a fallback.
+    // looks); the WaitForJobTask classes require Site B, with the
+    // HDT-SMP-on-stack flag selecting between two label variants; the
+    // bare Site-B variant is the fallback when no FSMP frame is found.
+    //
+    // Reclassified in v0.2.1 after the FSMP maintainer identified the
+    // Site-B target (SkyrimSE+0xc38130) as Skyrim's `WaitForJobTask`,
+    // i.e. main blocking until the engine's job pool drains — see
+    // docs/case-study/27 §0.
     // ====================================================================
     Classified Classify(const Observations& a_obs) {
         // 1. BSSpinLock AB-BA — high confidence when owner is main.
@@ -566,10 +573,12 @@ namespace FreezeLogger::Snapshot::Verdict {
             };
         }
 
-        // 2. HDT-SMP / Site-B — requires both the Site-B wait AND a
-        //    frame inside hdtsmp64.dll above main's RSP. Confidence
-        //    climbs with the Singleton-B chain being torn down and a
-        //    visible worker pool.
+        // 2. Skyrim WaitForJobTask hang with an HDT-SMP frame on main's
+        //    stack. The FSMP frame is the upstream `Main::Update` hook
+        //    trampoline, not the cause — the wait itself is inside
+        //    Skyrim's task pool. Confidence climbs when the Singleton-B
+        //    chain is torn down AND the FSMP worker pool is visible
+        //    idle (the canonical fingerprint from case-study 27).
         if (a_obs.inSiteB && a_obs.hdtsmpOnMainStack) {
             std::string conf = "medium";
             if (a_obs.siteBChainWalked && !a_obs.siteBChainOk &&
@@ -579,18 +588,21 @@ namespace FreezeLogger::Snapshot::Verdict {
             }
             return {
                 Class::HdtsmpSiteB,
-                "HDT-SMP / Site-B Papyrus event-source wait",
+                "Skyrim WaitForJobTask hang (FSMP on main's stack is the "
+                "upstream Main::Update hook, not the cause)",
                 conf,
                 "docs/case-study/27-hdtsmp-deadlock-report.md",
             };
         }
 
-        // 3. Site-B without the HDT-SMP fingerprint — same bug class but
-        //    proximate caller is something else.
+        // 3. Site-B without an HDT-SMP frame on the stack — same engine
+        //    class (main is parked inside WaitForJobTask), proximate
+        //    upstream hook is something other than FSMP or the engine
+        //    reaches the wait directly.
         if (a_obs.inSiteB) {
             return {
                 Class::SiteBNoHdtsmp,
-                "Site-B Papyrus event-source wait (no HDT-SMP fingerprint)",
+                "Skyrim WaitForJobTask hang (no HDT-SMP / FSMP frame on stack)",
                 a_obs.siteBChainWalked && !a_obs.siteBChainOk ? "medium" : "low",
                 "docs/case-study/27-hdtsmp-deadlock-report.md",
             };
@@ -621,7 +633,7 @@ namespace FreezeLogger::Snapshot::Verdict {
         const char* SiteString(const Observations& o) {
             if (o.inSiteA && o.inSiteB) return "A+B (?)";
             if (o.inSiteA) return "A (Singleton-A id 34554 lock primitive)";
-            if (o.inSiteB) return "B (Singleton-B +0xc38130 event-source wrapper)";
+            if (o.inSiteB) return "B (Skyrim WaitForJobTask @ SkyrimSE+0xc38130)";
             return "unrecognised";
         }
 

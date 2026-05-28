@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.26)
 
 project(FreezeLogger
-    VERSION       0.2.0
+    VERSION       0.3.0
     DESCRIPTION   "SKSE plugin that detects and diagnoses Skyrim hard freezes"
     HOMEPAGE_URL  ""
     LANGUAGES     CXX
@@ -32,6 +32,7 @@ set(SOURCES
     src/PapyrusLogTap.cpp
     src/SkseMessageTap.cpp
     src/DebugTriggers.cpp
+    src/TaskPoolBaseline.cpp
     src/snapshot/Threads.cpp
     src/snapshot/Modules.cpp
     src/snapshot/Papyrus.cpp
@@ -40,6 +41,7 @@ set(SOURCES
     src/snapshot/MainWaitProbe.cpp
     src/snapshot/System.cpp
     src/snapshot/MiniDump.cpp
+    src/snapshot/TaskPool.cpp
     src/snapshot/Verdict.cpp
     src/snapshot/WaitGraph.cpp
 )
@@ -59,6 +61,7 @@ set(HEADERS
     src/PapyrusLogTap.h
     src/SkseMessageTap.h
     src/DebugTriggers.h
+    src/TaskPoolBaseline.h
     src/snapshot/Threads.h
     src/snapshot/Modules.h
     src/snapshot/Papyrus.h
@@ -67,6 +70,7 @@ set(HEADERS
     src/snapshot/MainWaitProbe.h
     src/snapshot/System.h
     src/snapshot/MiniDump.h
+    src/snapshot/TaskPool.h
     src/snapshot/Verdict.h
     src/snapshot/WaitGraph.h
 )

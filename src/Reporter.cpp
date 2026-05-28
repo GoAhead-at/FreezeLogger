@@ -10,6 +10,7 @@
 #include "snapshot/Modules.h"
 #include "snapshot/Papyrus.h"
 #include "snapshot/System.h"
+#include "snapshot/TaskPool.h"
 #include "snapshot/Threads.h"
 #include "snapshot/Verdict.h"
 #include "snapshot/WaitGraph.h"
@@ -173,6 +174,15 @@ namespace FreezeLogger::Reporter {
         if (cfg.snapshot.include_engine) {
             Section(os, "Engine state",   [](auto& s){ Snapshot::Engine::Write(s);    });
         }
+        // Task-pool snapshot runs after Engine state (which already
+        // contains the long-form MainWaitProbe) and before the Wait
+        // graph cross-tabulation. The intent — see docs/spec.md §6.9.5 —
+        // is to expose which layer of Singleton-B was torn down between
+        // the last healthy frame and the freeze instant. Cheap to run;
+        // the heavy lifting (periodic capture) happens on the main
+        // thread during normal frames.
+        Section(os, "Task pool snapshot",
+                [](auto& s){ Snapshot::TaskPool::Write(s); });
         if (cfg.snapshot.include_threads) {
             // The wait graph is a thread-cross-cut and only meaningful when
             // we already have permission to OpenThread/SuspendThread; gate

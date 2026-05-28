@@ -42,13 +42,29 @@ namespace FreezeLogger::Snapshot::MainWaitProbe {
 
         // Second deadlock site discovered in freeze_2026-05-18_131625:
         // Main::Update has a SECOND infinite-wait call that does NOT route
-        // through the +0x5765d0 lock primitive. The flow is:
+        // through the +0x5765d0 lock primitive. Per the Faster HDT-SMP-UP
+        // maintainer (response to docs/case-study/27, dated 2026-05-28),
+        // this is Skyrim's `WaitForJobTask` — "waiting on jobs before
+        // rendering". The Main::Update call site is:
+        //
+        //   if (FUN_1405763e0(1) != 0) {
+        //       WaitForJobTask_140C38130(0, 1);
+        //   }
+        //
+        // i.e. "are there outstanding job-pool tasks? if yes, block until
+        // they drain." A well-known Skyrim hang class — common causes are
+        // deadlock or stalled IO inside the engine's job pool, not in any
+        // single mod. Frames inside `hdtsmp64.dll` showing up as upstream
+        // are the FSMP `Main::Update` hook trampoline — innocent
+        // infrastructure, not the producer of this wait.
         //
         //   SkyrimSE+0x5b34f9   call qword ptr [...] -> +0xc38130
         //   SkyrimSE+0x5b34fe   <-- main's saved return address
         //
         //   SkyrimSE+0xc38130   mov rax, [rip + 0x22ee539]   ; load Singleton-B
-        //                       (target = SkyrimSE+0x2f26a70)
+        //                       (target = SkyrimSE+0x2f26a70 — the task-pool
+        //                        / job-queue holder; identity confirmed by
+        //                        the FSMP maintainer)
         //                       mov r8d, ecx                 ; arg1 -> r8d
         //                       mov rcx, [rax + 8]           ; sub-array
         //                       mov rcx, [rcx + r8*8]        ; sub-array[arg1]
@@ -62,7 +78,10 @@ namespace FreezeLogger::Snapshot::MainWaitProbe {
         //                                                      WaitForSingleObject
         //
         // From Main::Update the call site uses ecx=0, edx=1, so the wait
-        // is on (Singleton-B->subArray[0])->vtable[1].
+        // is on (Singleton-B->subArray[0])->vtable[1]. We continue to call
+        // this struct "Singleton-B" in the code because the name is wired
+        // throughout the probes and the freeze-report format; the report's
+        // text labels it as the task-pool / WaitForJobTask producer.
         constexpr std::uintptr_t kSingletonBPtrRVA = 0x2f26a70;
         constexpr std::uintptr_t kWaitWrapperLoRVA = 0xc38130;
         constexpr std::uintptr_t kWaitWrapperHiRVA = 0xc3815b;
@@ -365,11 +384,16 @@ namespace FreezeLogger::Snapshot::MainWaitProbe {
         // start with a plausible ASCII letter, so vtable / heap pointer
         // qwords are not noisily mis-rendered.
         //
-        // The engine event-source-holder layout puts named event keys
-        // ("Weekday", "Water", "Cast Magic Event", "Crime Gold Event")
-        // inline within the singleton instance, so the existing hex
-        // dump shows them as raw qwords. Annotating those qwords inline
-        // saves the analyst from manually ASCII-decoding them.
+        // The original case-study report (docs/case-study/27, v1) read
+        // strings like "Weekday" / "Water" / "Cast Magic Event" inside
+        // Singleton-B and treated them as engine event keys. After the
+        // Faster HDT-SMP-UP maintainer identified Singleton-B as Skyrim's
+        // task-pool / job-queue holder (response of 2026-05-28), those
+        // qwords are best understood as *possibly* coincidental ASCII
+        // inside a job-id, hash, or inline padding — not necessarily a
+        // real engine event key. The annotation is still useful when the
+        // bytes really do form a string; the freeze-report text labels
+        // it as a "debug aid" so the reader doesn't over-read it.
         std::string DecodeQwordAsAscii(std::uintptr_t a_qword) noexcept {
             // Reject zero outright.
             if (a_qword == 0) return {};
@@ -400,9 +424,11 @@ namespace FreezeLogger::Snapshot::MainWaitProbe {
         // the vtable pointer at offset 0 is the most-valuable single qword
         // since it ties the instance back to a class in SkyrimSE.exe.
         // Each qword that decodes as printable ASCII gets the decoded
-        // string appended in quotes so engine event names are visible in
-        // the dump (the Singleton-B event-source-holder layout exposes
-        // these inline — see Appendix A of the case-study report).
+        // string appended in quotes (see DecodeQwordAsAscii). Read those
+        // strings as a *debug aid only* — for Singleton-B (Skyrim's
+        // task-pool holder, see case-study 27 §0) the printable bytes may
+        // be coincidental ASCII inside a job-id / hash / padding rather
+        // than a real string.
         void DumpMemoryWindow(
             std::ostream&  a_os,
             std::uintptr_t a_addr,
@@ -923,9 +949,13 @@ namespace FreezeLogger::Snapshot::MainWaitProbe {
         a_os << "         Singleton-A @ SkyrimSE+0x2f26668; reads HANDLE\n";
         a_os << "         from [singleton+0x60]; calls WaitForSingleObjectEx\n";
         a_os << "         (signature: pending=1 + ack-event NOT signaled).\n";
-        a_os << "    B) +0x5b34fe -> SkyrimSE+0xc38130 (small wrapper)\n";
-        a_os << "         Singleton-B @ SkyrimSE+0x2f26a70; walks\n";
-        a_os << "         (*S)[+8][idx0]->vtable[idx1]; tail-jumps to\n";
+        a_os << "    B) +0x5b34fe -> SkyrimSE+0xc38130 (WaitForJobTask)\n";
+        a_os << "         Skyrim's job-pool wait — \"are there outstanding\n";
+        a_os << "         tasks? if yes, block until they drain\" — identified\n";
+        a_os << "         by the Faster HDT-SMP-UP maintainer (case-study 27,\n";
+        a_os << "         response of 2026-05-28). Singleton-B @ SkyrimSE+0x2f26a70\n";
+        a_os << "         is the task-pool holder; the wrapper walks\n";
+        a_os << "         (*S)[+8][idx0]->vtable[idx1] and tail-jumps to\n";
         a_os << "         KERNEL32!WaitForSingleObject. Main::Update calls\n";
         a_os << "         this with idx0=0, idx1=1, dwMilliseconds=INFINITE.\n";
         a_os << "  KERNELBASE clobbers the caller's RBX with the HANDLE\n";
@@ -1216,6 +1246,11 @@ namespace FreezeLogger::Snapshot::MainWaitProbe {
                 a_os << std::format(
                     "    Singleton instance hex (32 qwords from "
                     "0x{:016x}):\n", bChain.global_ptr);
+                a_os << "    ASCII annotations on individual qwords are a debug\n"
+                        "    aid; per case-study 27 §0 this struct is Skyrim's\n"
+                        "    task-pool holder, so printable bytes may be a job-id\n"
+                        "    / hash / inline padding rather than an engine event\n"
+                        "    key.\n";
                 DumpMemoryWindow(a_os, bChain.global_ptr, 32);
             }
 
@@ -1302,16 +1337,22 @@ namespace FreezeLogger::Snapshot::MainWaitProbe {
             a_os << "    be unblocking imminently; may be a transient probe.\n";
         } else if (inSiteB) {
             a_os << "\n";
-            a_os << "    Verdict: main is parked at the +0xc38130 wrapper\n";
-            a_os << "    (Site B), waiting INFINITE on a HANDLE drawn from\n";
-            a_os << "    Singleton-B. Producer mapping not yet decoded —\n";
-            a_os << "    the constructor cluster id5578-id5600 (RVA\n";
-            a_os << "    +0x9220b..+0x92993) is the next investigation\n";
-            a_os << "    target. Cross-reference Threads section for any\n";
-            a_os << "    thread whose RBX equals 0x"
+            a_os << "    Verdict: main is parked inside Skyrim's\n";
+            a_os << "    WaitForJobTask (SkyrimSE+0xc38130), waiting INFINITE\n";
+            a_os << "    on a HANDLE drawn from Singleton-B — i.e. main is\n";
+            a_os << "    \"waiting on jobs before rendering\" and one of the\n";
+            a_os << "    in-flight jobs is not completing. Producer is\n";
+            a_os << "    inside Skyrim's task pool; per the FSMP maintainer\n";
+            a_os << "    (case-study 27, 2026-05-28) this is unrelated to\n";
+            a_os << "    HDT-SMP even when hdtsmp64.dll frames appear above\n";
+            a_os << "    this wait on main's stack — that's just the FSMP\n";
+            a_os << "    Main::Update hook trampoline. Common causes are an\n";
+            a_os << "    intra-job-pool deadlock or stalled IO inside one of\n";
+            a_os << "    the queued jobs. Cross-reference the Threads section\n";
+            a_os << "    for any thread whose RBX equals 0x"
                  << std::hex << m.rbx << std::dec
-                 << " — that's the producer\n";
-            a_os << "    that should have signaled this handle.\n";
+                 << " — that's\n";
+            a_os << "    the producer that should have signaled this handle.\n";
         } else if (!inSiteA && !inSiteB) {
             a_os << "\n";
             a_os << "    Verdict: main is in some kernel wait we don't yet\n";

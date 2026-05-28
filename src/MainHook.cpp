@@ -3,6 +3,7 @@
 
 #include "DebugTriggers.h"
 #include "Heartbeat.h"
+#include "TaskPoolBaseline.h"
 
 namespace FreezeLogger::MainHook {
 
@@ -39,6 +40,15 @@ namespace FreezeLogger::MainHook {
         void HookedUpdate(RE::Main* a_main, float a_deltaTime) {
             Heartbeat::TickMain();
 
+            // Periodic (≈1 Hz) capture of Skyrim's task-pool state.
+            // Internally throttled — 59 of 60 calls are an atomic
+            // increment+modulo only. See TaskPoolBaseline.cpp for the
+            // rationale and budget. The captured baseline is rendered
+            // alongside the post-freeze state in the freeze report so
+            // the analyst can see exactly which slot of Singleton-B got
+            // torn down.
+            TaskPoolBaseline::MaybeCapture();
+
 #if FL_DEBUG_TRIGGERS_ENABLED
             DebugTriggers::OnMainTick();
 #endif
@@ -57,6 +67,11 @@ namespace FreezeLogger::MainHook {
         };
 
         g_originalUpdate = trampoline.write_call<5>(hookSite.address(), HookedUpdate);
+
+        // Arm the periodic task-pool baseline capture. Idempotent;
+        // safe even if SkyrimSE.exe's base hasn't been resolved yet
+        // (the capture function gates on g_skyrimBase != 0 internally).
+        TaskPoolBaseline::Init();
 
         logs::info(
             "MainHook installed at 0x{:x} (Main::Update CALL site, REL::ID {} +0x{:x}).",
