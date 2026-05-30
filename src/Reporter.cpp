@@ -17,12 +17,18 @@
 #include "RingBuffer.h"
 
 #include <fstream>
+#include <mutex>
 
 namespace FreezeLogger::Reporter {
 
     namespace {
 
         std::filesystem::path g_lastReportPath;
+
+        // Serializes report writes. The watchdog thread and the test_mode
+        // hotkey thread can both reach the capture path; without this they
+        // could race on g_lastReportPath and the freeze_latest.log copy.
+        std::mutex g_captureMutex;
 
         std::string TimestampForFilename() {
             using namespace std::chrono;
@@ -54,14 +60,23 @@ namespace FreezeLogger::Reporter {
             std::ofstream&          a_os,
             Watchdog::StalledThread a_stalled,
             std::uint64_t           a_mainAgeMs,
-            std::uint64_t           a_renderAgeMs)
+            std::uint64_t           a_renderAgeMs,
+            bool                    a_manual)
         {
             const auto& cfg = Config::Get();
             a_os << "================================================================\n";
             a_os << "FreezeLogger v" << FL_VERSION_MAJOR << "." << FL_VERSION_MINOR << "." << FL_VERSION_PATCH << "\n";
             a_os << "Captured:        " << TimestampHuman() << "\n";
             a_os << "Runtime:         Skyrim SE 1.5.97\n";
-            a_os << "Stalled thread:  " << Watchdog::ToString(a_stalled) << "\n";
+            if (a_manual) {
+                a_os << "Capture type:    MANUAL (test_mode capture_on_pause hotkey)\n";
+                a_os << "                 NOTE: triggered on demand; the game was NOT\n";
+                a_os << "                 necessarily frozen. Watchdog ages below are\n";
+                a_os << "                 not meaningful for a manual capture.\n";
+            } else {
+                a_os << "Capture type:    AUTOMATIC (watchdog freeze detection)\n";
+            }
+            a_os << "Stalled thread:  " << (a_manual ? "n/a (manual)" : Watchdog::ToString(a_stalled)) << "\n";
             a_os << "Main age:        " << a_mainAgeMs   << " ms\n";
             a_os << "Render age:      " << a_renderAgeMs << " ms\n";
             a_os << "Threshold:       " << cfg.watchdog.threshold_ms << " ms\n";
@@ -122,11 +137,16 @@ namespace FreezeLogger::Reporter {
 
     }
 
-    void CaptureAndWrite(
+    namespace {
+
+    void CaptureImpl(
         Watchdog::StalledThread a_stalledThread,
         std::uint64_t           a_mainAgeMs,
-        std::uint64_t           a_renderAgeMs)
+        std::uint64_t           a_renderAgeMs,
+        bool                    a_manual)
     {
+        std::scoped_lock captureLock(g_captureMutex);
+
         const auto outputDir = EnsureOutputDir();
         if (outputDir.empty()) {
             logs::error("Reporter: no output directory could be resolved.");
@@ -135,7 +155,8 @@ namespace FreezeLogger::Reporter {
 
         const auto filename = std::format("freeze_{}_{}.log",
                                           TimestampForFilename(),
-                                          Watchdog::ToString(a_stalledThread));
+                                          a_manual ? "manual"
+                                                   : Watchdog::ToString(a_stalledThread));
         const auto reportPath = outputDir / filename;
 
         std::ofstream os(reportPath, std::ios::out | std::ios::trunc);
@@ -144,7 +165,7 @@ namespace FreezeLogger::Reporter {
             return;
         }
 
-        WriteHeader(os, a_stalledThread, a_mainAgeMs, a_renderAgeMs);
+        WriteHeader(os, a_stalledThread, a_mainAgeMs, a_renderAgeMs, a_manual);
 
         const auto& cfg = Config::Get();
 
@@ -208,7 +229,23 @@ namespace FreezeLogger::Reporter {
 
         EnforceRetention();
 
-        logs::info("Wrote freeze report '{}'.", reportPath.string());
+        logs::info("Wrote {} report '{}'.",
+                   a_manual ? "manual" : "freeze", reportPath.string());
+    }
+
+    }  // namespace
+
+    void CaptureAndWrite(
+        Watchdog::StalledThread a_stalledThread,
+        std::uint64_t           a_mainAgeMs,
+        std::uint64_t           a_renderAgeMs)
+    {
+        CaptureImpl(a_stalledThread, a_mainAgeMs, a_renderAgeMs, /*a_manual=*/false);
+    }
+
+    void CaptureManual() {
+        logs::warn("Reporter: manual capture requested via test_mode hotkey.");
+        CaptureImpl(Watchdog::StalledThread::None, 0, 0, /*a_manual=*/true);
     }
 
     void AnnotateLatestResolved(std::uint64_t a_resolvedAfterMs) {

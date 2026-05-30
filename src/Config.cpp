@@ -92,6 +92,10 @@ namespace FreezeLogger::Config {
             if (auto* l = root.get_as<toml::table>("logging")) {
                 out.logging.level = GetStringOr(*l, "level", out.logging.level);
             }
+            if (auto* t = root.get_as<toml::table>("test_mode")) {
+                out.test_mode.capture_on_pause = GetOr<bool>         (*t, "capture_on_pause", out.test_mode.capture_on_pause);
+                out.test_mode.hotkey_vk        = GetOr<std::uint32_t>(*t, "hotkey_vk",        out.test_mode.hotkey_vk);
+            }
         }
 
     }

@@ -12,6 +12,35 @@ namespace FreezeLogger::Watchdog {
         std::jthread g_thread;
         std::atomic<bool> g_running{false};
 
+        // Optional test_mode hotkey thread (always compiled; armed only when
+        // [test_mode] capture_on_pause = true). Distinct from the debug-only
+        // DebugTriggers hotkey, which is #if-compiled out of release builds
+        // and induces a real stall. This one writes a report on demand
+        // without stalling the game.
+        std::jthread g_hotkeyThread;
+
+        void HotkeyLoop(std::stop_token a_stopToken) {
+            const auto vk = Config::Get().test_mode.hotkey_vk;
+            logs::warn(
+                "Watchdog: test_mode capture-on-hotkey ARMED (VK 0x{:x}). "
+                "Pressing it writes an on-demand report; the game is NOT "
+                "stalled. Disable [test_mode] capture_on_pause for normal play.",
+                vk);
+
+            bool wasDown = false;
+            while (!a_stopToken.stop_requested()) {
+                const bool isDown =
+                    (::GetAsyncKeyState(static_cast<int>(vk)) & 0x8000) != 0;
+                if (isDown && !wasDown) {
+                    logs::warn("Watchdog: test_mode hotkey pressed; capturing "
+                               "manual report.");
+                    Reporter::CaptureManual();
+                }
+                wasDown = isDown;
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
+        }
+
         // True iff the foreground window belongs to *our* (i.e. Skyrim's)
         // process. When false, Skyrim's WinMain runs an idle-sleep path that
         // deliberately stops ticking Main::Update; treating that as a freeze
@@ -132,11 +161,19 @@ namespace FreezeLogger::Watchdog {
             return;
         }
         g_thread = std::jthread(Loop);
+
+        if (Config::Get().test_mode.capture_on_pause) {
+            g_hotkeyThread = std::jthread(HotkeyLoop);
+        }
     }
 
     void Stop() {
         if (!g_running.exchange(false)) {
             return;
+        }
+        if (g_hotkeyThread.joinable()) {
+            g_hotkeyThread.request_stop();
+            g_hotkeyThread.join();
         }
         if (g_thread.joinable()) {
             g_thread.request_stop();

@@ -5,7 +5,7 @@
 **Language:** C++20
 **Target runtime:** Skyrim Special Edition **1.5.97** (hard-pinned)
 **Engine binding:** CommonLibSSE-NG (covers 1.5.97; future SE/AE/VR support is a port, not a rebuild)
-**Status:** Draft v0.5 (introduces task-pool baseline ring + Task-pool snapshot section so the next captured freeze can name the stuck job)
+**Status:** Draft v0.6 (wires up the Papyrus VM + Animation-graph snapshot sections that were stubbed since v0.1, broadening coverage to script-side / animation freezes)
 
 ---
 
@@ -150,7 +150,8 @@ Key properties:
 | `TaskPoolBaseline` (v0.3) | Lock-protected ring-of-1 holding the most recently captured healthy state of Skyrim's task-pool holder (Singleton-B). Written from the `Main::Update` hook on a 1-in-60 throttle (≈1 Hz at 60 fps); read by `Snapshot::TaskPool` at freeze time. Captures 32 qwords of the singleton instance, 16 qwords of the sub-array, and for each of the first 8 sub-array entries an 8-qword entry window + 8-qword handle-table window. |
 | `Snapshot::TaskPool` (v0.3) | Renders the task-pool snapshot section: compares the last healthy baseline against a frozen-time capture of the same chain, with per-qword diff markers. Goal: expose which layer of the chain (global slot, singleton, sub-array, dispatch struct, handle table) was torn down between the last healthy frame and the freeze instant. See §6.10. |
 | `Snapshot::Modules` | Enumerates loaded DLLs (base address, size, path, **FileVersion** as of v0.2) |
-| `Snapshot::Papyrus` | Captures VM stats: active stacks, suspended scripts, queue |
+| `Snapshot::Papyrus` | Captures VM stats (v0.4): running/waiting-latent/attached-script/array/pending-func-msg/queued-unbind counts + a lock-free running-stack walk (state + freeze-state histogram). All non-locking member/`size()` reads. |
+| `Snapshot::AnimGraph` | Player-only animation graph (v0.4): graph count, active index, active project name, and `hkbBehaviorGraph` activity flags. |
 | `Snapshot::AnimGraph` | Captures **player-only** animation-graph state (lite) |
 | `Snapshot::Engine` | Captures cell, worldspace, player position, time of day, pause flags |
 | `Snapshot::System` | Captures memory, CPU load, GPU info, working set |
@@ -307,16 +308,34 @@ Section order in the report:
    - Modules under `Data\SKSE\Plugins` are flagged so SKSE plugin DLLs are
      visible at a glance.
 
-6. **Papyrus VM**
-   - Active stack count, suspended count, frozen count.
-   - Top N longest-running stacks (script + function name).
-   - Pending event queue depth.
+6. **Papyrus VM** *(wired up in v0.4)*
+   - VM flags: `initialized`, `overstressed` (VM shedding load).
+   - Counts read lock-free from `BSScript::Internal::VirtualMachine`
+     (1.5.97 layout): running stacks (`allRunningStacks`), waiting-latent
+     (`waitingLatentReturns`), attached scripts (`attachedScripts`), live
+     script arrays, pending function messages (`uiWaitingFunctionMessages`
+     + overflow), suspend overflow A/B, queued unbinds. All are
+     `size()`-style reads (`_capacity - _free`), no map traversal, **no
+     VM spinlock taken** (taking an engine lock from the watchdog thread
+     would be the exact lock-order inversion the project avoids).
+   - Best-effort, lock-free running-stack walk (capped at 512 visited /
+     16 detailed): per-stack `stackID`, `State`, `FreezeState`, frame
+     count, plus a state histogram. Racy by construction; the outer
+     `Section` SEH guards any torn-map fault.
+   - Diagnostic intent: a large pending-func-msg / waiting-latent backlog
+     points at a **script-side** stall (runaway mod script, stuck latent
+     call), distinct from the native `WaitForJobTask` hang in case-study 27.
 
-7. **Animation graph (lite)**
-   - Player only.
-   - Current behavior graph file, current animation event, last animation
-     event, time in current animation state.
-   - Flag if player has been in a transition for > 1 s.
+7. **Animation graph (lite)** *(wired up in v0.4)*
+   - Player only. Resolves `BSAnimationGraphManager` via
+     `IAnimationGraphManagerHolder::GetAnimationGraphManager`.
+   - Graph count + active graph index (`RUNTIME_DATA::activeGraph`).
+   - Active `BShkbAnimationGraph`: project name, anim-bone count, foot-IK.
+   - Active `hkbBehaviorGraph`: `isActive`, `isLinked`, `updateActiveNodes`,
+     `stateOrTransitionChanged`, static-node count, root-generator presence.
+   - Diagnostic intent: a behavior graph stuck `active=no`, or an
+     unexpected/empty project on the player, can indicate an animation
+     deadlock / broken behavior swap — distinct from the case-study 27 hang.
 
 8. **Engine state**
    - Current cell + worldspace EditorIDs.
@@ -503,7 +522,24 @@ cache_directory      = ""         # empty = <output>/symbols
 
 [logging]
 level               = "info"      # trace | debug | info | warn | error
+
+[test_mode]
+capture_on_pause    = false       # internal/QA: on-demand report via hotkey
+hotkey_vk           = 0x13        # 0x13 = VK_PAUSE
 ```
+
+`[test_mode]` is a **runtime, always-compiled** developer/QA toggle (added in
+0.4.0), distinct from the compile-time `FL_DEBUG_TRIGGERS` machinery in §7.7.
+When `capture_on_pause = true`, `Watchdog::Start` spawns a lightweight thread
+that polls `hotkey_vk` (default `VK_PAUSE`); each fresh press calls
+`Reporter::CaptureManual`, which writes the full report **on demand without
+stalling the game**. The report carries `Capture type: MANUAL` in its header
+and is named `freeze_<ts>_manual.log`. Unlike the §7.7 debug hotkey it does
+**not** induce a synthetic stall and does **not** exercise the watchdog
+detection path — it is purely for eyeballing report output (Papyrus VM,
+Animation graph, Task pool, …) on a live, healthy session. Default OFF; leave
+off for public releases. Manual and watchdog captures are serialized by a
+mutex inside the reporter.
 
 ### 7.5 Safety & Robustness
 
@@ -786,8 +822,21 @@ packaging script in-repo so the muscle memory exists when we do.
   `BSScript::Internal::VirtualMachine::TraceStack`/log emission. Decide
   during PapyrusLogTap implementation. Verify the chosen vtable slot in
   Ghidra if the CommonLibSSE-NG headers are ambiguous.
-- **AnimGraph lite accessor**: confirm `RE::Actor::GetAnimationGraphs` (or
-  equivalent) returns usable state on 1.5.97.
+- **AnimGraph lite accessor — RESOLVED (v0.4).** Uses
+  `IAnimationGraphManagerHolder::GetAnimationGraphManager` →
+  `BSAnimationGraphManager::graphs[RUNTIME_DATA::activeGraph]` →
+  `BShkbAnimationGraph` (`projectName`, `behaviorGraph`). Verified against
+  the CommonLibSSE-NG 1.5.97 headers shipped by the vcpkg port. The "current
+  animation event / time-in-state" sub-items were dropped from the lite
+  scope: extracting them requires walking the `hkbBehaviorGraph` state
+  machine (Havok internals), which is the footgun-prone traversal §13
+  defers. The wired-up section reports the behavior-graph activity flags
+  instead, which answer the "is the graph wedged?" question without the
+  deep walk.
+- **Papyrus VM stats — RESOLVED (v0.4).** Counts + running-stack walk read
+  directly from the `VirtualMachine` 1.5.97 layout, lock-free. (The Papyrus
+  *log* interception item below is separate and already handled by
+  `PapyrusLogTap`.)
 
 The remaining items are *implementation* unknowns, not architectural ones,
 and shouldn't gate the rest of the work.

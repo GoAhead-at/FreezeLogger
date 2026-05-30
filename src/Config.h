@@ -76,6 +76,19 @@ namespace FreezeLogger::Config {
         std::string level = "info";
     };
 
+    struct TestMode {
+        // OFF by default. When true, a lightweight background thread polls
+        // for `hotkey_vk`; on each fresh press it writes a freeze report
+        // on demand WITHOUT stalling the game. This is a developer/QA
+        // convenience for validating report output (e.g. the Papyrus VM and
+        // Animation-graph sections) on a live, healthy game — it is NOT a
+        // synthetic-stall trigger and does not exercise the watchdog
+        // detection path. Intended for internal/not-yet-public builds.
+        bool          capture_on_pause = false;
+        // Virtual-key code to listen for. Default 0x13 = VK_PAUSE.
+        std::uint32_t hotkey_vk        = 0x13;
+    };
+
     struct Root {
         Watchdog   watchdog;
         Snapshot   snapshot;
@@ -84,6 +97,7 @@ namespace FreezeLogger::Config {
         Output     output;
         Symbols    symbols;
         Logging    logging;
+        TestMode   test_mode;
     };
 
     void        Load();           // reads Data/SKSE/Plugins/FreezeLogger.toml; falls back to defaults

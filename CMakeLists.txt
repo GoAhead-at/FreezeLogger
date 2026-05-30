@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.26)
 
 project(FreezeLogger
-    VERSION       0.3.0
+    VERSION       0.4.0
     DESCRIPTION   "SKSE plugin that detects and diagnoses Skyrim hard freezes"
     HOMEPAGE_URL  ""
     LANGUAGES     CXX

@@ -88,3 +88,22 @@ cache_directory      = ""
 [logging]
 # trace | debug | info | warn | error
 level = "info"
+
+
+[test_mode]
+# Developer/QA convenience for INTERNAL (not-yet-public) builds.
+#
+# When capture_on_pause = true, a lightweight background thread polls for
+# hotkey_vk. Each fresh press writes a full freeze report ON DEMAND, WITHOUT
+# stalling the game — useful for eyeballing report output (Papyrus VM,
+# Animation graph, Task pool, etc.) on a live, healthy session. The report
+# is labelled "Capture type: MANUAL" and named freeze_<ts>_manual.log.
+#
+# This is NOT a synthetic-stall trigger and does not exercise the watchdog
+# detection path. Leave it false for normal play / public releases.
+capture_on_pause = false
+
+# Virtual-key code to listen for. Default 0x13 = VK_PAUSE (the Pause/Break
+# key). Examples: 0x77 = F8, 0x78 = F9. See the Microsoft "Virtual-Key
+# Codes" list for other values.
+hotkey_vk = 0x13

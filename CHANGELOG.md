@@ -7,6 +7,69 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 Diagnostic-only output format changes are not treated as a breaking SemVer event
 unless they remove or rename an existing section — fields may grow without notice.
 
+## [0.4.0] — 2026-05-29
+
+Coverage release. The Papyrus VM and Animation-graph report sections had
+been placeholders since v0.1 (they printed only the singleton pointer + a
+`<not yet wired up>` line). Both are now implemented against the
+CommonLibSSE-NG 1.5.97 headers, broadening FreezeLogger from "native
+`WaitForJobTask` hang" diagnosis (the case-study 27 family) toward
+**script-side and animation freezes** as well.
+
+### Added
+- **`[test_mode]` config section** (`capture_on_pause`, `hotkey_vk`) — a
+  runtime, always-compiled developer/QA toggle for internal builds. When
+  `capture_on_pause = true`, the watchdog spawns a lightweight thread that
+  polls `hotkey_vk` (default `0x13` = VK_PAUSE); each fresh press writes a
+  full report **on demand without stalling the game** (`Reporter::CaptureManual`).
+  The report is labelled `Capture type: MANUAL` and named
+  `freeze_<ts>_manual.log`. Distinct from the compile-time `FL_DEBUG_TRIGGERS`
+  hotkey (debug builds only, induces a real stall); this works in release
+  builds and never blocks the main thread. Default OFF; leave off for public
+  releases. Report writes are now serialized by a mutex since the watchdog
+  and hotkey threads can both reach the capture path.
+- **Papyrus VM stats** (`Snapshot::Papyrus`). Reads the
+  `BSScript::Internal::VirtualMachine` 1.5.97 layout directly, lock-free:
+  - Flags: `initialized`, `overstressed`.
+  - Counts: running stacks, waiting-latent returns, attached-script
+    handles, live script arrays, pending function messages (+ overflow),
+    suspend overflow A/B, queued unbinds. All are `size()`-style reads
+    (`_capacity - _free`) — no map traversal, and **no VM spinlock is
+    taken** (taking an engine lock from the watchdog at freeze time would
+    be the very lock-order inversion this project exists to prevent).
+  - Best-effort, lock-free running-stack walk (capped 512 visited / 16
+    detailed): per-stack `stackID`, `State`, `FreezeState`, frame count,
+    plus a state histogram. Racy by construction; the outer `Section`
+    SEH guards any torn-map fault.
+  - Reading guide in-section: a large pending-func-msg / waiting-latent
+    backlog points at a script-side stall, distinct from the native hang.
+- **Animation graph (player, lite)** (`Snapshot::AnimGraph`). Resolves
+  `BSAnimationGraphManager` via
+  `IAnimationGraphManagerHolder::GetAnimationGraphManager`, then reports
+  graph count, active graph index (`RUNTIME_DATA::activeGraph`), the active
+  `BShkbAnimationGraph` project name / anim-bone count / foot-IK, and the
+  active `hkbBehaviorGraph` activity flags (`isActive`, `isLinked`,
+  `updateActiveNodes`, `stateOrTransitionChanged`, static-node count,
+  root-generator presence).
+
+### Changed
+- `docs/spec.md` v0.5 → v0.6: §6 (Papyrus VM) and §7 (Animation graph)
+  rewritten from intent to implemented behavior; component table updated;
+  §12 open questions "AnimGraph lite accessor" and Papyrus VM stats marked
+  **RESOLVED** with the verified accessor chains.
+- `CMakeLists.txt`: project version bumped to **0.4.0**.
+
+### Notes
+- The "current animation event / time-in-state" idea from the original
+  v0.1 sketch was intentionally dropped from the lite scope: extracting it
+  needs a Havok `hkbBehaviorGraph` state-machine walk (the footgun
+  traversal deferred in spec §13). The behavior-graph activity flags answer
+  "is the graph wedged?" without that risk.
+- Neither section is on the critical path for the case-study 27
+  `WaitForJobTask` hang; they exist to catch the *other* freeze families.
+
+---
+
 ## [0.3.0] — 2026-05-28
 
 Forward-looking diagnostic release. v0.2.x finally pinpointed the wait
