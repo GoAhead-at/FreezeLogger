@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.26)
 
 project(FreezeLogger
-    VERSION       0.4.0
+    VERSION       0.5.0
     DESCRIPTION   "SKSE plugin that detects and diagnoses Skyrim hard freezes"
     HOMEPAGE_URL  ""
     LANGUAGES     CXX
@@ -21,6 +21,7 @@ find_package(tomlplusplus  CONFIG REQUIRED)
 set(SOURCES
     src/main.cpp
     src/AddrLib.cpp
+    src/SkyrimAnchors.cpp
     src/Config.cpp
     src/Logger.cpp
     src/MainHook.cpp
@@ -49,6 +50,7 @@ set(SOURCES
 set(HEADERS
     src/PCH.h
     src/AddrLib.h
+    src/SkyrimAnchors.h
     src/Config.h
     src/Heartbeat.h
     src/Logger.h

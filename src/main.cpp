@@ -8,20 +8,57 @@
 #include "PapyrusLogTap.h"
 #include "RenderHook.h"
 #include "SkseMessageTap.h"
+#include "SkyrimAnchors.h"
 #include "Symbols.h"
 #include "Watchdog.h"
 
 namespace {
 
+    // Multi-runtime support (v0.5.0): we no longer pin a single build.
+    // The generic diagnostics (heartbeat, watchdog, threads, modules,
+    // Papyrus, anim-graph, mini-dump) work on any CommonLibSSE-NG-supported
+    // runtime; the deep Site-B / WaitForJobTask probe is anchored at runtime
+    // by signature (see SkyrimAnchors) rather than by per-version RVAs.
+    //
+    // We accept:
+    //   - SE  >= 1.5.97  (the 1.5.x branch we were built and validated on)
+    //   - AE  (1.6.x, any point release)
+    // VR is recognised but DEFERRED: the Main::Update / Init_InitD3D hooks
+    // bind SE+AE RelocationIDs only, so installing on VR would throw. We
+    // refuse it explicitly with a clear message until VR IDs are added.
+    // Anything older than SE 1.5.97 on the 1.5 branch is refused (the hook
+    // call-site IDs and struct assumptions predate it).
     bool VerifyRuntime() {
         const auto runtime = REL::Module::get().version();
-        constexpr REL::Version pinned{1, 5, 97, 0};
-        if (runtime != pinned) {
+
+        if (REL::Module::IsVR()) {
             logs::error(
-                "FreezeLogger pins runtime 1.5.97.0; got {}.{}.{}.{}. Refusing to install hooks.",
+                "FreezeLogger: VR runtime {}.{}.{}.{} detected. VR support is "
+                "not yet wired (hooks bind SE/AE only); refusing to install to "
+                "avoid a crash. VR is planned — see CHANGELOG.",
                 runtime[0], runtime[1], runtime[2], runtime[3]);
             return false;
         }
+
+        if (REL::Module::IsAE()) {
+            logs::info(
+                "FreezeLogger: runtime {}.{}.{}.{} (AE) accepted.",
+                runtime[0], runtime[1], runtime[2], runtime[3]);
+            return true;
+        }
+
+        // SE branch: require >= 1.5.97.
+        constexpr REL::Version kMinSE{1, 5, 97, 0};
+        if (runtime < kMinSE) {
+            logs::error(
+                "FreezeLogger requires SE >= 1.5.97 or AE; got {}.{}.{}.{}. "
+                "Refusing to install hooks.",
+                runtime[0], runtime[1], runtime[2], runtime[3]);
+            return false;
+        }
+        logs::info(
+            "FreezeLogger: runtime {}.{}.{}.{} (SE) accepted.",
+            runtime[0], runtime[1], runtime[2], runtime[3]);
         return true;
     }
 
@@ -84,6 +121,7 @@ extern "C" __declspec(dllexport) bool SKSEPlugin_Load(const SKSE::LoadInterface*
 
     FreezeLogger::Symbols::Init();
     FreezeLogger::AddrLib::Init();
+    FreezeLogger::SkyrimAnchors::Init();
 
     if (KillSwitchActive()) {
         return true;  // loaded, but inert

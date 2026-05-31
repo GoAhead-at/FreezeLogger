@@ -2,6 +2,7 @@
 #include "snapshot/Verdict.h"
 
 #include "Heartbeat.h"
+#include "SkyrimAnchors.h"
 
 #include <Windows.h>
 #include <TlHelp32.h>
@@ -24,11 +25,15 @@ namespace FreezeLogger::Snapshot::Verdict {
         constexpr std::uintptr_t kLockFnHiRVA   = 0x576620;
         constexpr std::uintptr_t kLockReturnRVA = 0x5765ff;
 
-        // Site B — +0xc38130 = Skyrim's `WaitForJobTask` (id'd by FSMP
-        // maintainer, 2026-05-28); Singleton-B is its task-pool holder.
-        constexpr std::uintptr_t kSingletonBPtrRVA  = 0x2f26a70;
-        constexpr std::uintptr_t kWaitWrapperLoRVA  = 0xc38130;
-        constexpr std::uintptr_t kWaitWrapperHiRVA  = 0xc3815b;
+        // Site B — Skyrim's `WaitForJobTask` (id'd by FSMP maintainer,
+        // 2026-05-28); Singleton-B is its task-pool holder. As of v0.5.0
+        // the WaitForJobTask entry and the Singleton-B slot are resolved at
+        // runtime by SkyrimAnchors (signature scan) so Site-B works on
+        // SE/AE/VR. kWaitWrapperWindow brackets the small thunk for the
+        // "rip is inside WaitForJobTask" heuristic (SE thunk is 0x2b bytes).
+        constexpr std::uintptr_t kWaitWrapperWindow = 0x40;
+        // SE-1.5.97-only: the saved return address just past the
+        // WaitForJobTask call inside Main::Update. No AE signature yet.
         constexpr std::uintptr_t kMainUpdateRetBRVA = 0x5b34fe;
 
         // BSSpinLock spin-retry RVA inside +0x132bd0.
@@ -40,6 +45,17 @@ namespace FreezeLogger::Snapshot::Verdict {
         constexpr std::size_t kSiteScanWindow    = 0x400;  // 1 KiB
         constexpr std::size_t kHdtsmpScanWindow  = 0x800;  // 2 KiB
         constexpr std::size_t kSpinScanWindow    = 0x100;  // 256 B
+
+        // The Site-A lock primitive, the BSSpinLock spin-retry site, and the
+        // Main::Update return-address corroboration are still anchored by
+        // hard SE 1.5.97 RVAs (no AE/VR signatures yet). Gate every use of
+        // them on this so AE/VR don't read stale addresses; Site-B remains
+        // available everywhere via SkyrimAnchors.
+        bool RuntimeIsSE1597() noexcept {
+            const auto v = REL::Module::get().version();
+            return REL::Module::IsSE() &&
+                   v[0] == 1 && v[1] == 5 && v[2] == 97;
+        }
     }
 
     // ====================================================================
@@ -305,10 +321,11 @@ namespace FreezeLogger::Snapshot::Verdict {
             std::uintptr_t handle    = 0;
         };
 
-        SingletonBChain WalkSingletonB(std::uintptr_t a_base) noexcept {
+        SingletonBChain WalkSingletonB(std::uintptr_t a_slotVA) noexcept {
             SingletonBChain c{};
             DWORD seh = 0;
-            if (!TryReadQword(a_base + kSingletonBPtrRVA, c.globalPtr, seh)) {
+            if (a_slotVA == 0 ||
+                !TryReadQword(a_slotVA, c.globalPtr, seh)) {
                 c.nullStep = 0;
                 return c;
             }
@@ -340,9 +357,9 @@ namespace FreezeLogger::Snapshot::Verdict {
         // Used as a writer-still-live probe — a chain that's mutating
         // during the sample window is a live writer; one that doesn't
         // change is in steady-state deadlock.
-        bool ChainStable(std::uintptr_t a_base, const SingletonBChain& a_first) {
+        bool ChainStable(std::uintptr_t a_slotVA, const SingletonBChain& a_first) {
             ::Sleep(50);
-            const auto second = WalkSingletonB(a_base);
+            const auto second = WalkSingletonB(a_slotVA);
             return second.globalPtr == a_first.globalPtr &&
                    second.subArray  == a_first.subArray  &&
                    second.element0  == a_first.element0  &&
@@ -481,9 +498,12 @@ namespace FreezeLogger::Snapshot::Verdict {
         Observations Observe() noexcept {
             Observations obs;
 
-            const HMODULE skyrim = ::GetModuleHandleW(L"SkyrimSE.exe");
+            const HMODULE skyrim = ::GetModuleHandleW(nullptr);
             if (!skyrim) return obs;
             const auto base = reinterpret_cast<std::uintptr_t>(skyrim);
+            const bool seSite = RuntimeIsSE1597();
+            const auto& anchors = SkyrimAnchors::Get();
+            const bool haveAnchors = SkyrimAnchors::Available();
 
             const auto mainTid = static_cast<DWORD>(Heartbeat::MainTid());
             const auto selfTid = ::GetCurrentThreadId();
@@ -493,28 +513,40 @@ namespace FreezeLogger::Snapshot::Verdict {
             const auto m = ReadMainContext(mainTid);
             if (!m.ok) return obs;
 
-            const bool ripInLockFnA =
-                m.rip >= base + kLockFnLoRVA && m.rip < base + kLockFnHiRVA;
+            // Site B: WaitForJobTask is anchored at runtime (works on
+            // SE/AE/VR). "rip inside the thunk" is the portable signal; the
+            // saved-return-address corroboration uses an SE-only RVA.
             const bool ripInWrapperB =
-                m.rip >= base + kWaitWrapperLoRVA &&
-                m.rip <  base + kWaitWrapperHiRVA;
+                haveAnchors &&
+                m.rip >= anchors.waitForJobTask &&
+                m.rip <  anchors.waitForJobTask + kWaitWrapperWindow;
 
             DWORD seh = 0;
-            const bool retAInStack = SawReturnAddr(
-                m.rsp, base + kLockReturnRVA, kSiteScanWindow, seh);
-            const bool retBInStack = SawReturnAddr(
-                m.rsp, base + kMainUpdateRetBRVA, kSiteScanWindow, seh);
+
+            // Site A (lock primitive) + the Main::Update return-addr scan are
+            // SE-1.5.97-only until signatured.
+            bool ripInLockFnA = false;
+            bool retAInStack   = false;
+            bool retBInStack   = false;
+            if (seSite) {
+                ripInLockFnA =
+                    m.rip >= base + kLockFnLoRVA && m.rip < base + kLockFnHiRVA;
+                retAInStack = SawReturnAddr(
+                    m.rsp, base + kLockReturnRVA, kSiteScanWindow, seh);
+                retBInStack = SawReturnAddr(
+                    m.rsp, base + kMainUpdateRetBRVA, kSiteScanWindow, seh);
+            }
 
             obs.inSiteA = ripInLockFnA  || retAInStack;
             obs.inSiteB = ripInWrapperB || retBInStack;
 
             // 2. Singleton-B chain (when we're at Site B).
-            if (obs.inSiteB) {
-                const auto chain = WalkSingletonB(base);
+            if (obs.inSiteB && haveAnchors) {
+                const auto chain = WalkSingletonB(anchors.singletonBSlot);
                 obs.siteBChainWalked = true;
                 obs.siteBChainOk     = chain.ok;
                 obs.siteBNullStep    = chain.nullStep;
-                obs.siteBChainStable = ChainStable(base, chain);
+                obs.siteBChainStable = ChainStable(anchors.singletonBSlot, chain);
             }
 
             // 3. HDT-SMP fingerprint — find the loaded module, then ask
@@ -539,10 +571,12 @@ namespace FreezeLogger::Snapshot::Verdict {
                 obs.hdtsmpWorkerWaitRva  = wp.modalRva;
             }
 
-            // 4. BSSpinLock cycle (Site-A AB-BA fingerprint).
-            const auto spin = ScanSpinlocks(base, selfTid, mainTid);
-            obs.spinlockSpinnerSeen = spin.spinnerSeen;
-            obs.spinlockOwnedByMain = spin.ownerIsMain;
+            // 4. BSSpinLock cycle (Site-A AB-BA fingerprint). SE-only RVA.
+            if (seSite) {
+                const auto spin = ScanSpinlocks(base, selfTid, mainTid);
+                obs.spinlockSpinnerSeen = spin.spinnerSeen;
+                obs.spinlockOwnedByMain = spin.ownerIsMain;
+            }
 
             return obs;
         }
@@ -633,7 +667,7 @@ namespace FreezeLogger::Snapshot::Verdict {
         const char* SiteString(const Observations& o) {
             if (o.inSiteA && o.inSiteB) return "A+B (?)";
             if (o.inSiteA) return "A (Singleton-A id 34554 lock primitive)";
-            if (o.inSiteB) return "B (Skyrim WaitForJobTask @ SkyrimSE+0xc38130)";
+            if (o.inSiteB) return "B (Skyrim WaitForJobTask, runtime-anchored)";
             return "unrecognised";
         }
 

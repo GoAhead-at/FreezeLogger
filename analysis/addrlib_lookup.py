@@ -76,7 +76,7 @@ def parse(path: Path):
         return v
 
     fmt = u32()
-    if fmt != 1:
+    if fmt not in (1, 2):
         raise SystemExit(f"unexpected format: {fmt}")
     ver = (u32(), u32(), u32(), u32())
     name_len = u32()

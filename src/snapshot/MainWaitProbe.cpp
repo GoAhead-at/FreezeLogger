@@ -2,6 +2,7 @@
 #include "snapshot/MainWaitProbe.h"
 
 #include "Heartbeat.h"
+#include "SkyrimAnchors.h"
 
 #include <Windows.h>
 #include <TlHelp32.h>
@@ -943,6 +944,40 @@ namespace FreezeLogger::Snapshot::MainWaitProbe {
         }
 
     void Write(std::ostream& a_os) {
+        // The long-form audit below is anchored on hard SE-1.5.97 RVAs for
+        // Site-A (the lock primitive, its singleton, the spin-retry site)
+        // and the Main::Update return addresses. Those have no AE/VR
+        // signatures yet, so on other runtimes we skip the long-form audit
+        // to avoid reading stale addresses. The Site-B / WaitForJobTask
+        // classification is still available everywhere via the runtime-
+        // anchored "Freeze classification" and "Task pool snapshot"
+        // sections (see SkyrimAnchors).
+        {
+            const auto v = REL::Module::get().version();
+            const bool se1597 =
+                REL::Module::IsSE() && v[0] == 1 && v[1] == 5 && v[2] == 97;
+            if (!se1597) {
+                a_os << "Main::Update wait-helper probe: SKIPPED on this "
+                        "runtime.\n";
+                a_os << std::format(
+                    "  Runtime {}.{}.{}.{} ({}). The long-form audit is "
+                    "anchored on SE-1.5.97-only\n",
+                    v[0], v[1], v[2], v[3],
+                    REL::Module::IsVR() ? "VR" : (REL::Module::IsAE() ? "AE" : "SE"));
+                a_os << "  RVAs (Site-A lock primitive, spin-retry, "
+                        "Main::Update return addresses) that have not yet\n";
+                a_os << "  been signatured for other builds. The Site-B / "
+                        "WaitForJobTask path IS covered on this\n";
+                a_os << "  runtime — see the \"Freeze classification\" and "
+                        "\"Task pool snapshot\" sections, which\n";
+                a_os << "  resolve WaitForJobTask + Singleton-B at runtime via "
+                        "signature scan.\n";
+                a_os << "  Anchor status: " << SkyrimAnchors::DiagnosticString()
+                     << "\n";
+                return;
+            }
+        }
+
         a_os << "Main::Update wait-helper probe (Skyrim SE 1.5.97):\n";
         a_os << "  Two known infinite-wait sites inside RE::Main::Update:\n";
         a_os << "    A) +0x5b35dd -> SkyrimSE+0x5765d0 (id 34554)\n";

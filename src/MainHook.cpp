@@ -24,15 +24,19 @@ namespace FreezeLogger::MainHook {
         //       REL::RelocationID(35551, 36544).address()
         //       + REL::Relocate(0x11F, 0x160));
         //
-        //   The first half (35551, 0x11F) is the SE 1.5.97 binding; we pin
-        //   only that one because we hard-require runtime 1.5.97.
+        //   SE 1.5.97 : id 35551, offset 0x11F
+        //   AE 1.6.x  : id 36544, offset 0x160
+        //
+        //   As of v0.5.0 we bind both via REL::RelocationID + REL::Relocate
+        //   (resolved from the user's Address Library), so the hook installs
+        //   on SE and AE alike. VR is not yet bound (see VerifyRuntime).
         //
         //   This NG version (3.5.5 from the colorglass registry) doesn't
         //   ship the `stl::write_thunk_call` helper, so we use the
         //   underlying trampoline.write_call<5>(...) directly.
         // ---------------------------------------------------------------------
-        constexpr std::uint64_t  kCallSiteID     = 35551;
-        constexpr std::uint64_t  kCallSiteOffset = 0x11F;
+        constexpr std::uint64_t  kCallSiteID_SE  = 35551;
+        constexpr std::uint64_t  kCallSiteID_AE  = 36544;
 
         using UpdateFn = void(*)(RE::Main*, float);
         REL::Relocation<UpdateFn> g_originalUpdate;
@@ -62,20 +66,21 @@ namespace FreezeLogger::MainHook {
         SKSE::AllocTrampoline(14);
         auto& trampoline = SKSE::GetTrampoline();
 
-        const REL::Relocation<std::uintptr_t> hookSite{
-            REL::ID(kCallSiteID), kCallSiteOffset
-        };
+        const auto siteAddr =
+            REL::RelocationID(kCallSiteID_SE, kCallSiteID_AE).address() +
+            REL::Relocate(0x11F, 0x160);
 
-        g_originalUpdate = trampoline.write_call<5>(hookSite.address(), HookedUpdate);
+        g_originalUpdate = trampoline.write_call<5>(siteAddr, HookedUpdate);
 
         // Arm the periodic task-pool baseline capture. Idempotent;
-        // safe even if SkyrimSE.exe's base hasn't been resolved yet
-        // (the capture function gates on g_skyrimBase != 0 internally).
+        // safe even if the Singleton-B anchor wasn't resolved (the capture
+        // function gates on the slot being non-zero internally).
         TaskPoolBaseline::Init();
 
         logs::info(
-            "MainHook installed at 0x{:x} (Main::Update CALL site, REL::ID {} +0x{:x}).",
-            hookSite.address(), kCallSiteID, kCallSiteOffset);
+            "MainHook installed at 0x{:x} (Main::Update CALL site, "
+            "RelocationID {}/{}).",
+            siteAddr, kCallSiteID_SE, kCallSiteID_AE);
     }
 
 }

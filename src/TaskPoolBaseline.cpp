@@ -1,6 +1,8 @@
 #include "PCH.h"
 #include "TaskPoolBaseline.h"
 
+#include "SkyrimAnchors.h"
+
 #include <atomic>
 #include <cstring>
 #include <mutex>
@@ -9,16 +11,15 @@ namespace FreezeLogger::TaskPoolBaseline {
 
     namespace {
 
-        // Must stay in sync with MainWaitProbe / Verdict.
-        constexpr std::uintptr_t kSingletonBPtrRVA = 0x2f26a70;
-
         // Frame throttling. 60 ticks ≈ 1 Hz at 60 fps. We want a recent
         // baseline at freeze time, but not so frequent that the cost is
         // noticeable on the main thread. The capture itself is a handful
         // of memory reads plus a brief mutex; well under 50 µs measured.
         constexpr std::uint32_t kCaptureEveryNTicks = 60;
 
-        std::atomic<std::uintptr_t> g_skyrimBase{0};
+        // Absolute VA of the Singleton-B global pointer slot, resolved by
+        // SkyrimAnchors (signature scan). 0 = unavailable on this runtime.
+        std::atomic<std::uintptr_t> g_singletonSlot{0};
         std::atomic<std::uint32_t>  g_tickCount{0};
 
         // The mutex is held only during the per-capture commit (memcpy
@@ -63,14 +64,12 @@ namespace FreezeLogger::TaskPoolBaseline {
         // inside TryReadQword does not run afoul of C2712. Returns true
         // iff at least the singleton pointer was readable (a sample with
         // a null singleton is not useful as a baseline).
-        bool BuildSample(std::uintptr_t a_base, Sample& a_out) noexcept {
+        bool BuildSample(std::uintptr_t a_slotVA, Sample& a_out) noexcept {
             a_out = Sample{};
             a_out.captureTickMs = ::GetTickCount64();
 
             std::uintptr_t singleton = 0;
-            if (!TryReadQword(a_base + kSingletonBPtrRVA, singleton) ||
-                singleton == 0)
-            {
+            if (!TryReadQword(a_slotVA, singleton) || singleton == 0) {
                 return false;
             }
             a_out.singletonPtr = singleton;
@@ -115,35 +114,33 @@ namespace FreezeLogger::TaskPoolBaseline {
     }   // anonymous
 
     void Init() {
-        if (g_skyrimBase.load(std::memory_order_relaxed) != 0) return;
-        const HMODULE h = ::GetModuleHandleW(L"SkyrimSE.exe");
-        if (h) {
-            g_skyrimBase.store(
-                reinterpret_cast<std::uintptr_t>(h),
-                std::memory_order_relaxed);
+        if (g_singletonSlot.load(std::memory_order_relaxed) != 0) return;
+
+        if (SkyrimAnchors::Available()) {
+            const auto slot = SkyrimAnchors::Get().singletonBSlot;
+            g_singletonSlot.store(slot, std::memory_order_relaxed);
             logs::info(
-                "TaskPoolBaseline armed (SkyrimSE.exe base 0x{:x}, "
-                "Singleton-B RVA 0x{:x}, capture every {} ticks).",
-                reinterpret_cast<std::uintptr_t>(h),
-                kSingletonBPtrRVA,
-                kCaptureEveryNTicks);
+                "TaskPoolBaseline armed (Singleton-B slot 0x{:x}, "
+                "capture every {} ticks).",
+                slot, kCaptureEveryNTicks);
         } else {
             logs::warn(
-                "TaskPoolBaseline::Init could not resolve SkyrimSE.exe; "
-                "baseline capture is disabled.");
+                "TaskPoolBaseline::Init - SkyrimAnchors unavailable ({}); "
+                "baseline capture is disabled on this runtime.",
+                SkyrimAnchors::DiagnosticString());
         }
     }
 
     void MaybeCapture() noexcept {
-        const auto base = g_skyrimBase.load(std::memory_order_relaxed);
-        if (base == 0) return;
+        const auto slot = g_singletonSlot.load(std::memory_order_relaxed);
+        if (slot == 0) return;
 
         // Tick gate first — on 59 out of 60 frames we touch nothing else.
         const auto tick = g_tickCount.fetch_add(1, std::memory_order_relaxed);
         if ((tick % kCaptureEveryNTicks) != 0) return;
 
         Sample sample;
-        if (!BuildSample(base, sample)) return;
+        if (!BuildSample(slot, sample)) return;
 
         // Commit. Holding the lock across a single memcpy is fine; the
         // watchdog reader's copy-out is the only contender and runs at

@@ -4,6 +4,7 @@
 #include "AddrLib.h"
 #include "Config.h"
 #include "Heartbeat.h"
+#include "SkyrimAnchors.h"
 #include "Symbols.h"
 
 #include <TlHelp32.h>
@@ -158,18 +159,25 @@ namespace FreezeLogger::Snapshot::Threads {
         // Returns "" when nothing matches; otherwise a short suffix like
         // "(=Singleton-A *)".
         std::string CorrelateRegister(std::uintptr_t a_value, std::uintptr_t a_skyrimBase) {
-            if (a_skyrimBase == 0 || a_value == 0) return {};
+            if (a_value == 0) return {};
 
-            // Singleton-A pointer slot (id34554 lock primitive)
-            const auto sA = a_skyrimBase + 0x2f26668;
-            // Singleton-A struct address (loaded by main loop)
-            const auto sAStruct = a_skyrimBase + 0x2f26680;
-            // Singleton-B pointer slot (Site B wait, +0xc38130 wrapper)
-            const auto sB = a_skyrimBase + 0x2f26a70;
+            // Singleton-B pointer slot — runtime-anchored (SE/AE/VR).
+            if (SkyrimAnchors::Available() &&
+                a_value == SkyrimAnchors::Get().singletonBSlot) {
+                return " (=&Singleton-B.ptrSlot)";
+            }
 
-            if (a_value == sA)        return " (=&Singleton-A.ptrSlot)";
-            if (a_value == sAStruct)  return " (=Singleton-A struct)";
-            if (a_value == sB)        return " (=&Singleton-B.ptrSlot)";
+            // Singleton-A slots are still hard SE-1.5.97 RVAs (no AE/VR
+            // signature yet); only correlate them on that exact runtime.
+            const auto v = REL::Module::get().version();
+            const bool se1597 =
+                REL::Module::IsSE() && v[0] == 1 && v[1] == 5 && v[2] == 97;
+            if (a_skyrimBase != 0 && se1597) {
+                const auto sA       = a_skyrimBase + 0x2f26668;  // ptr slot
+                const auto sAStruct = a_skyrimBase + 0x2f26680;  // struct
+                if (a_value == sA)       return " (=&Singleton-A.ptrSlot)";
+                if (a_value == sAStruct) return " (=Singleton-A struct)";
+            }
             return {};
         }
 

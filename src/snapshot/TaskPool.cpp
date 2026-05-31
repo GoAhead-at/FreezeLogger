@@ -1,6 +1,7 @@
 #include "PCH.h"
 #include "snapshot/TaskPool.h"
 
+#include "SkyrimAnchors.h"
 #include "TaskPoolBaseline.h"
 
 #include <cstring>
@@ -9,9 +10,6 @@
 namespace FreezeLogger::Snapshot::TaskPool {
 
     namespace {
-
-        // Must stay in sync with TaskPoolBaseline / MainWaitProbe / Verdict.
-        constexpr std::uintptr_t kSingletonBPtrRVA = 0x2f26a70;
 
         // ----- SEH-bounded primitives ------------------------------------
         // Local copies — kept here so Snapshot::TaskPool stays a leaf
@@ -44,14 +42,14 @@ namespace FreezeLogger::Snapshot::TaskPool {
         // Frozen-time capture of the same shape as the baseline. SEH-safe;
         // no C++ destructors used inside.
         bool BuildFrozenSample(
-            std::uintptr_t            a_base,
+            std::uintptr_t            a_slotVA,
             TaskPoolBaseline::Sample& a_out) noexcept
         {
             a_out = TaskPoolBaseline::Sample{};
             a_out.captureTickMs = ::GetTickCount64();
 
             std::uintptr_t singleton = 0;
-            if (!TryReadQword(a_base + kSingletonBPtrRVA, singleton)) {
+            if (!TryReadQword(a_slotVA, singleton)) {
                 return false;
             }
             a_out.singletonPtr = singleton;
@@ -197,15 +195,18 @@ namespace FreezeLogger::Snapshot::TaskPool {
     }   // anonymous namespace
 
     void Write(std::ostream& a_os) {
-        const HMODULE skyrim = ::GetModuleHandleW(L"SkyrimSE.exe");
-        if (!skyrim) {
-            a_os << "<SkyrimSE.exe module handle unavailable; "
+        if (!SkyrimAnchors::Available()) {
+            a_os << "<Singleton-B anchor unavailable on this runtime; "
                     "task-pool snapshot skipped>\n";
+            a_os << "  reason: " << SkyrimAnchors::DiagnosticString() << "\n";
             return;
         }
-        const auto base = reinterpret_cast<std::uintptr_t>(skyrim);
+        const auto& anchors = SkyrimAnchors::Get();
+        const auto slot = anchors.singletonBSlot;
 
-        a_os << "Task pool snapshot (Singleton-B @ SkyrimSE+0x2f26a70):\n";
+        a_os << std::format(
+            "Task pool snapshot (Singleton-B @ {}+0x{:x}):\n",
+            "module", anchors.singletonBSlotRVA);
         a_os << "\n";
         a_os << "  Skyrim's task-pool holder, identified by the Faster HDT-SMP-UP\n";
         a_os << "  maintainer (docs/case-study/27 §0). When main is parked inside\n";
@@ -220,17 +221,21 @@ namespace FreezeLogger::Snapshot::TaskPool {
         const bool haveBaseline = TaskPoolBaseline::Latest(baseline);
 
         TaskPoolBaseline::Sample frozen{};
-        if (!BuildFrozenSample(base, frozen)) {
+        if (!BuildFrozenSample(slot, frozen)) {
             a_os << "  <frozen-state capture faulted; nothing to compare>\n";
             return;
         }
 
         const auto nowMs = frozen.captureTickMs;
         a_os << std::format(
-            "  SkyrimSE base:                       0x{:016x}\n", base);
+            "  Module base:                         0x{:016x}\n",
+            anchors.moduleBase);
         a_os << std::format(
-            "  Singleton-B RVA:                     0x{:x}\n",
-            kSingletonBPtrRVA);
+            "  WaitForJobTask RVA:                  0x{:x}\n",
+            anchors.waitForJobTaskRVA);
+        a_os << std::format(
+            "  Singleton-B slot RVA:                0x{:x}\n",
+            anchors.singletonBSlotRVA);
         if (haveBaseline) {
             const auto ageMs = (nowMs >= baseline.captureTickMs)
                                    ? (nowMs - baseline.captureTickMs)

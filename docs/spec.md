@@ -3,9 +3,9 @@
 **Project name:** `FreezeLogger`
 **Type:** SKSE64 native DLL plugin
 **Language:** C++20
-**Target runtime:** Skyrim Special Edition **1.5.97** (hard-pinned)
-**Engine binding:** CommonLibSSE-NG (covers 1.5.97; future SE/AE/VR support is a port, not a rebuild)
-**Status:** Draft v0.6 (wires up the Papyrus VM + Animation-graph snapshot sections that were stubbed since v0.1, broadening coverage to script-side / animation freezes)
+**Target runtime:** Skyrim SE **>= 1.5.97** and **AE (1.6.x)**; VR recognised but deferred
+**Engine binding:** CommonLibSSE-NG. Deep Site-B anchors are resolved at runtime by signature scan (`SkyrimAnchors`), so multi-runtime support is no longer a per-version RVA port.
+**Status:** Draft v0.7 (multi-runtime: SE 1.5.97 + AE via runtime-anchored Site-B probe; Site-A and long-form audit gate to SE 1.5.97 until signatured; VR deferred)
 
 ---
 
@@ -14,7 +14,8 @@
 | Branch | Decision |
 |---|---|
 | Audience scope | Personal-first; release on Nexus is a stretch goal |
-| Target runtime | SE 1.5.97 only, runtime version verified at load |
+| Target runtime | SE >= 1.5.97 and AE (1.6.x), verified at load; VR deferred (hooks bind SE/AE only) |
+| Multi-runtime (v0.5) | Site-B (`WaitForJobTask` + Singleton-B) resolved at runtime by signature scan (`SkyrimAnchors`); hooks bound via RelocationID(SE,AE); Address Library reader accepts fmt 1 (SE) + fmt 2 (AE). Site-A lock primitive, spin-retry, and the long-form `MainWaitProbe` audit self-disable off SE 1.5.97 until signatured. Fixed a latent Singleton-B `+0x400` slip by deriving the slot from the instruction. |
 | Engine binding | CommonLibSSE-NG via vcpkg manifest |
 | Heartbeat hooks | **Dual** — `Main::Update` *and* `BSGraphics::Renderer::Present` |
 | Watchdog timing | `threshold = 5000 ms`, `check = 500 ms`, `cooldown = 60 s` |
@@ -26,7 +27,7 @@
 | Deferred to v2 | §6 *full* (nearest-N actors), JSON sidecar |
 | Synthetic trigger | Debug-build hotkey (`VK_PAUSE`) **+** env-var one-shot, both gated by `FL_DEBUG_TRIGGERS=ON`. Optional `FL_FAKE_HEARTBEAT=1` for testing the pipeline before hooks are pinned. |
 | Symbol resolution | Microsoft public symbol server, local cache, URL embedded in every report header |
-| Address Library | Hard required; plugin refuses to load on any runtime ≠ 1.5.97 |
+| Address Library | Required for hook binding; reader accepts SE `version-*.bin` (fmt 1) and AE `versionlib-*.bin` (fmt 2). Site-B anchors do **not** depend on it (signature-scanned). |
 | Source control | Local git only (no remote) |
 | Test framework | Catch2 v3 (vcpkg) for unit tests; integration tests via the synthetic trigger |
 | License | Deferred until / unless we publish |
@@ -137,8 +138,10 @@ Key properties:
 
 | Component | Responsibility |
 |---|---|
-| `PluginEntry` | SKSE plugin bootstrap, version handshake, init/shutdown |
+| `PluginEntry` | SKSE plugin bootstrap, version handshake, init/shutdown. `VerifyRuntime` accepts SE >= 1.5.97 and AE; refuses VR (hooks bind SE/AE only). |
 | `Config` | Load `FreezeLogger.toml` from `Data/SKSE/Plugins/` |
+| `SkyrimAnchors` (v0.5) | Runtime signature-scan resolver for the Site-B engine anchors. Scans the game module's `.text` for the `WaitForJobTask` dispatcher body (15-byte signature) and derives the Singleton-B (task-pool holder) global from its `mov rax,[rip+disp]` prologue. Version-independent (SE/AE/VR), no Address Library dependency for these anchors. `Available()` is false if the signature is absent, and every Site-B consumer degrades gracefully. Replaces the hard `+0x2f26a70`/`+0xc38130` RVAs and fixes a latent `+0x400` Singleton-B slip (real slot is `+0x2f26670` on SE). |
+| `AddrLib` | Custom Address Library reader. Resolves nearest-ID annotations for `SkyrimSE.exe` RVAs. As of v0.5 accepts fmt 1 (SE `version-*.bin`) **and** fmt 2 (AE `versionlib-*.bin`), builds the filename from the running version, and globs `SKSE/Plugins` as a fallback. |
 | `Heartbeat` | Two atomic timestamps (`main`, `render`) + accessors |
 | `MainHook` | Hooks `Main::Update`, bumps `mainHeartbeat` |
 | `RenderHook` | Detours `IDXGISwapChain::Present` (vtable slot 8) after `BSGraphics::Renderer::Init_InitD3D` runs; bumps `renderHeartbeat` on every Present |
@@ -146,7 +149,7 @@ Key properties:
 | `Symbols` | DbgHelp init with MS symsrv, mutex-guarded resolver |
 | `Snapshot::Threads` | Stack-walks every thread in the process |
 | `Snapshot::Verdict` | Classifies the freeze at the top of the report — runs the cheap subset of `MainWaitProbe`'s detection (wait-site, Singleton-B chain, HDT-SMP stack presence, worker-pool count) and emits a single block the human reader can read first before scrolling through hundreds of KB of thread dumps. See §6.1.5. |
-| `Snapshot::MainWaitProbe` | Long-form audit trail for the main thread's wait site (Singleton-A id 34554 lock primitive, or Singleton-B = Skyrim's `WaitForJobTask` helper at SkyrimSE+0xc38130 — identified by the Faster HDT-SMP-UP maintainer, see `docs/case-study/27` §0). Used to be the sole verdict surface; as of v0.2 it remains the deep-dive while `Snapshot::Verdict` lifts the headline. |
+| `Snapshot::MainWaitProbe` | Long-form audit trail for the main thread's wait site (Singleton-A id 34554 lock primitive, or Singleton-B = Skyrim's `WaitForJobTask` helper — identified by the Faster HDT-SMP-UP maintainer, see `docs/case-study/27` §0). Used to be the sole verdict surface; as of v0.2 it remains the deep-dive while `Snapshot::Verdict` lifts the headline. **As of v0.5 the long-form audit self-disables off SE 1.5.97** (Site-A/spin-retry/return-address RVAs are not yet signatured for AE); on AE it prints a note pointing to the runtime-anchored Verdict + Task-pool sections, which cover Site-B everywhere. |
 | `TaskPoolBaseline` (v0.3) | Lock-protected ring-of-1 holding the most recently captured healthy state of Skyrim's task-pool holder (Singleton-B). Written from the `Main::Update` hook on a 1-in-60 throttle (≈1 Hz at 60 fps); read by `Snapshot::TaskPool` at freeze time. Captures 32 qwords of the singleton instance, 16 qwords of the sub-array, and for each of the first 8 sub-array entries an 8-qword entry window + 8-qword handle-table window. |
 | `Snapshot::TaskPool` (v0.3) | Renders the task-pool snapshot section: compares the last healthy baseline against a frozen-time capture of the same chain, with per-qword diff markers. Goal: expose which layer of the chain (global slot, singleton, sub-array, dispatch struct, handle table) was torn down between the last healthy frame and the freeze instant. See §6.10. |
 | `Snapshot::Modules` | Enumerates loaded DLLs (base address, size, path, **FileVersion** as of v0.2) |
@@ -598,8 +601,10 @@ freeze-detector/
 │   └── ghidra/
 │       └── find_present_callers.py  # Ghidra Jython script: enumerates Present callers
 ├── src/
-│   ├── main.cpp                     # SKSE entry points
+│   ├── main.cpp                     # SKSE entry points; VerifyRuntime (SE>=1.5.97 + AE)
 │   ├── Config.{h,cpp}
+│   ├── AddrLib.{h,cpp}              # Address Library reader (fmt 1 SE + fmt 2 AE)
+│   ├── SkyrimAnchors.{h,cpp}        # v0.5 runtime signature-scan resolver (WaitForJobTask + Singleton-B)
 │   ├── Heartbeat.{h,cpp}            # two atomics + accessors
 │   ├── MainHook.{h,cpp}
 │   ├── RenderHook.{h,cpp}
@@ -804,19 +809,26 @@ packaging script in-repo so the muscle memory exists when we do.
 
 ## 12. Open Questions (still to resolve during bring-up)
 
-- **REL::IDs for the two hook targets — RESOLVED for 1.5.97.** Cross-verified
+- **REL::IDs for the two hook targets — RESOLVED for SE + AE (v0.5).** Cross-verified
   against two independent commits of `doodlum/skyrim-community-shaders`
   (`08286310`, `783f5024`):
-  - `RE::Main::Update` CALL site → `REL::ID(35551)`, offset `0x11F`
-    (call-site inside the WinMain main loop; canonical NG idiom is
-    `stl::write_thunk_call` rather than entry detour).
-  - `BSGraphics::Renderer::Init_InitD3D` CALL site → `REL::ID(75595)`,
-    offset `0x50` (used to defer install of the swap-chain detour).
+  - `RE::Main::Update` CALL site → `REL::RelocationID(35551, 36544)` + `REL::Relocate(0x11F, 0x160)`.
+  - `BSGraphics::Renderer::Init_InitD3D` CALL site → `REL::RelocationID(75595, 77226)` + `REL::Relocate(0x50, 0x2BC)`.
   - `IDXGISwapChain::Present` → vtable slot 8 (Microsoft DXGI contract;
     no REL::ID needed, no Address Library dependency for this hop).
-  Pinned values live in `src/MainHook.cpp` and `src/RenderHook.cpp` with
-  inline citations. If a future runtime is targeted, see
-  `docs/ghidra-bring-up.md`.
+  Bound values live in `src/MainHook.cpp` and `src/RenderHook.cpp` with
+  inline citations. **VR IDs are not yet added** — VR is refused at load.
+- **Site-B engine anchors (WaitForJobTask + Singleton-B) — RESOLVED, runtime-anchored (v0.5).**
+  No longer per-version RVAs. `SkyrimAnchors` scans `.text` for the
+  dispatcher body signature and derives the Singleton-B global from the
+  prologue's rip-relative load. Verified offline against unpacked SE 1.5.97
+  (`+0xc38130` → `+0x2f26670`) and AE 1.6.1170 (`+0xcfd410` → `+0x31771d8`).
+  This also fixed a latent `+0x400` slip (the old `+0x2f26a70` constant).
+- **Site-A / long-form audit on AE — DEFERRED.** The lock primitive
+  (id 34554), the `BSSpinLock` spin-retry site, and the Main::Update
+  return-address corroboration are still hard SE-1.5.97 RVAs and have no AE
+  signatures yet. Those sub-probes self-disable off SE 1.5.97. Signaturing
+  them (same technique as `SkyrimAnchors`) is the next multi-runtime step.
 - **Papyrus log interception mechanism**: prefer registering as a
   `BSScript::ILogEventSink` if CommonLibSSE-NG exposes it; otherwise hook
   `BSScript::Internal::VirtualMachine::TraceStack`/log emission. Decide

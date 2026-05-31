@@ -52,8 +52,10 @@ namespace FreezeLogger::RenderHook {
         //   declares RUNTIME_DATA::swapChain at offset 0x28 inside
         //   BSRenderManager's RUNTIME_DATA block.
         // ---------------------------------------------------------------------
-        constexpr std::uint64_t  kInitD3DCallSiteID     = 75595;
-        constexpr std::uint64_t  kInitD3DCallSiteOffset = 0x50;
+        //   SE 1.5.97 : id 75595, offset 0x50
+        //   AE 1.6.x  : id 77226, offset 0x2BC
+        constexpr std::uint64_t  kInitD3DCallSiteID_SE  = 75595;
+        constexpr std::uint64_t  kInitD3DCallSiteID_AE  = 77226;
         constexpr std::size_t    kPresentVTableSlot     = 8;
 
         using InitD3DFn = void(*)();
@@ -125,16 +127,16 @@ namespace FreezeLogger::RenderHook {
         SKSE::AllocTrampoline(14);
         auto& trampoline = SKSE::GetTrampoline();
 
-        const REL::Relocation<std::uintptr_t> hookSite{
-            REL::ID(kInitD3DCallSiteID), kInitD3DCallSiteOffset
-        };
+        const auto siteAddr =
+            REL::RelocationID(kInitD3DCallSiteID_SE, kInitD3DCallSiteID_AE).address() +
+            REL::Relocate(0x50, 0x2BC);
 
-        g_originalInitD3D = trampoline.write_call<5>(hookSite.address(), HookedInitD3D);
+        g_originalInitD3D = trampoline.write_call<5>(siteAddr, HookedInitD3D);
 
         logs::info(
-            "RenderHook: armed Init_InitD3D hook (REL::ID {} +0x{:x}); "
+            "RenderHook: armed Init_InitD3D hook (RelocationID {}/{}) at 0x{:x}; "
             "swap-chain detour will install when D3D11 is created.",
-            kInitD3DCallSiteID, kInitD3DCallSiteOffset);
+            kInitD3DCallSiteID_SE, kInitD3DCallSiteID_AE, siteAddr);
     }
 
 }

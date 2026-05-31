@@ -7,6 +7,59 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 Diagnostic-only output format changes are not treated as a breaking SemVer event
 unless they remove or rename an existing section — fields may grow without notice.
 
+## [0.5.0] — 2026-05-31
+
+Multi-runtime release. FreezeLogger no longer pins Skyrim SE 1.5.97. It now
+installs on **SE >= 1.5.97 and AE (1.6.x, any point release)**, with the
+deep Site-B / `WaitForJobTask` probe resolved at runtime by signature scan
+rather than per-version RVAs. VR is recognised but **deferred** (see below).
+
+### Added
+- **`SkyrimAnchors`** — a runtime signature-scan resolver for the Site-B
+  engine anchors. At load it scans the game module's `.text` for the
+  `WaitForJobTask` dispatcher body and *derives* the Singleton-B (task-pool
+  holder) global from its `mov rax,[rip+disp]` prologue. This is
+  version-independent: SE 1.5.97 and every AE point release resolve from the
+  same 15-byte signature with **no Address Library dependency** for these
+  two anchors. Verified offline against unpacked SE 1.5.97
+  (`WaitForJobTask @ +0xc38130` → `Singleton-B @ +0x2f26670`) and AE 1.6.1170
+  (`+0xcfd410` → `+0x31771d8`). If the signature is not found (e.g. a future
+  engine whose dispatcher is reshaped), `Available()` stays false and every
+  Site-B consumer degrades gracefully instead of dereferencing a stale RVA.
+- **AE hook bindings.** `Main::Update` (RelocationID 35551/36544 + Relocate
+  `0x11F`/`0x160`) and `Init_InitD3D` (RelocationID 75595/77226 + Relocate
+  `0x50`/`0x2BC`) now bind on both SE and AE.
+- **Address Library reader: AE support.** The bundled parser now accepts
+  format 2 (AE `versionlib-*.bin`) in addition to format 1 (SE
+  `version-*.bin`), builds the expected filename from the running version,
+  and falls back to globbing `SKSE/Plugins` for either prefix.
+
+### Changed
+- **`VerifyRuntime` relaxed.** Was a hard pin to `1.5.97.0`; now accepts
+  SE >= 1.5.97 and AE. The five Site-B consumers (`TaskPoolBaseline`,
+  `Snapshot::TaskPool`, `Snapshot::Verdict`, `Snapshot::Threads`,
+  `MainWaitProbe`) read the anchored addresses from `SkyrimAnchors` instead
+  of hard-coded RVAs, and the module base / Address Library now resolve via
+  `GetModuleHandle(nullptr)` so they are runtime-agnostic.
+- **Graceful capability gating.** The Site-A lock-primitive probe, the
+  `BSSpinLock` spin-retry scan, the Main::Update return-address
+  corroboration, and the long-form `MainWaitProbe` audit are still anchored
+  on SE-1.5.97-only RVAs (no AE signatures yet). They now self-disable on
+  other runtimes with a clear note, while the runtime-anchored Site-B
+  classification and Task-pool snapshot remain fully available everywhere.
+
+### Fixed
+- **Singleton-B `+0x400` address slip.** Several Site-B consumers used
+  `+0x2f26a70` for the Singleton-B slot, but `WaitForJobTask` actually loads
+  it from `+0x2f26670` (an old hand-arithmetic error). Now derived from the
+  instruction itself via `SkyrimAnchors`, so it is correct on every build.
+
+### Deferred
+- **VR.** Recognised but refused for now (the hooks bind SE/AE RelocationIDs
+  only; installing on VR would throw). No VR install was available to verify
+  the dispatcher shape offline. The signature scanner is expected to cover VR
+  unchanged once VR hook IDs are added and the shape is confirmed.
+
 ## [0.4.0] — 2026-05-29
 
 Coverage release. The Papyrus VM and Animation-graph report sections had

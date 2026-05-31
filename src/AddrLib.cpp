@@ -25,19 +25,45 @@ namespace FreezeLogger::AddrLib {
 
         std::filesystem::path SkyrimDataDir() {
             wchar_t buf[MAX_PATH] = {};
-            const auto h = ::GetModuleHandleW(L"SkyrimSE.exe");
+            const auto h = ::GetModuleHandleW(nullptr);  // game EXE
             if (!h) return {};
             if (::GetModuleFileNameW(h, buf, MAX_PATH) == 0) return {};
             std::filesystem::path exe(buf);
             return exe.parent_path() / L"Data";
         }
 
+        // SE ships  version-<a>-<b>-<c>-<d>.bin    (format 1)
+        // AE ships  versionlib-<a>-<b>-<c>-<d>.bin (format 2)
+        // VR ships  version-<a>-<b>-<c>-<d>.csv    (unsupported here)
+        // Build the exact filename from the running version, trying both
+        // prefixes; fall back to globbing the Plugins dir for any match.
         std::filesystem::path FindAddrLibBin() {
             const auto data = SkyrimDataDir();
             if (data.empty()) return {};
-            const auto p = data / L"SKSE" / L"Plugins" / L"version-1-5-97-0.bin";
+            const auto plugins = data / L"SKSE" / L"Plugins";
             std::error_code ec;
-            if (std::filesystem::exists(p, ec)) return p;
+
+            const auto v = REL::Module::get().version();
+            const auto suffix = std::format("{}-{}-{}-{}.bin",
+                                            v[0], v[1], v[2], v[3]);
+
+            for (const char* prefix : {"versionlib-", "version-"}) {
+                const auto p = plugins / (std::string(prefix) + suffix);
+                if (std::filesystem::exists(p, ec)) return p;
+            }
+
+            // Fallback: first version*.bin in the directory.
+            if (std::filesystem::is_directory(plugins, ec)) {
+                for (const auto& e : std::filesystem::directory_iterator(plugins, ec)) {
+                    if (!e.is_regular_file(ec)) continue;
+                    const auto name = e.path().filename().string();
+                    if (name.ends_with(".bin") &&
+                        (name.starts_with("version-") ||
+                         name.starts_with("versionlib-"))) {
+                        return e.path();
+                    }
+                }
+            }
             return {};
         }
 
@@ -64,7 +90,9 @@ namespace FreezeLogger::AddrLib {
             auto u64 = [&]() { std::uint64_t v; std::memcpy(&v, data.data()+pos, 8); pos += 8; return v; };
 
             const std::uint32_t fmt = u32();
-            if (fmt != 1) {
+            // Format 1 (SE) and format 2 (AE) share the same entry-stream
+            // encoding; only the generator's format tag differs.
+            if (fmt != 1 && fmt != 2) {
                 a_diag = std::format("unexpected format {}", fmt);
                 return false;
             }
@@ -146,12 +174,13 @@ namespace FreezeLogger::AddrLib {
     }
 
     void Init() {
-        const auto h = ::GetModuleHandleW(L"SkyrimSE.exe");
+        const auto h = ::GetModuleHandleW(nullptr);  // game EXE
         g_skyrimBase = h ? reinterpret_cast<std::uintptr_t>(h) : 0;
 
         const auto path = FindAddrLibBin();
         if (path.empty()) {
-            g_diagnostic = "version-1-5-97-0.bin not found";
+            g_diagnostic =
+                "Address Library bin (version-*.bin / versionlib-*.bin) not found";
             logs::warn("AddrLib::Init - {}", g_diagnostic);
             return;
         }
