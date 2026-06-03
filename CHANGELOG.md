@@ -7,6 +7,26 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 Diagnostic-only output format changes are not treated as a breaking SemVer event
 unless they remove or rename an existing section — fields may grow without notice.
 
+## [0.6.0] — 2026-06-03
+
+### Added
+- **Stuck-job attribution** in the Task-pool snapshot section
+  (`Snapshot::TaskPool`). When main is parked in `WaitForJobTask`, the report
+  now automatically searches for the *producer* that should have signaled
+  main's wait handle, instead of leaving it to a manual cross-reference. It
+  builds a target set from the frozen task-pool capture — the owning queue
+  entry / dispatch struct / handle-table pointers (the entry whose
+  handle_table contains main's wait handle is flagged `PRIMARY`), their
+  heap-like sub-fields, plus the bare wait-handle value — then suspends every
+  other thread and scans its integer registers and the top `0x800` bytes of
+  its stack for any of those targets. Each matching thread is reported as a
+  "Candidate producer" with which target it matched and a full symbolicated
+  stack walk, so the worker holding the stuck job can be named directly. If
+  nothing matches, it explains the likely reasons (orphaned signal, or a
+  worker blocked deeper than the scan window, e.g. in a kernel IO wait). All
+  thread access is RAII-guarded (suspend resumes before the handle closes)
+  and runs under the existing `Reporter::Section` SEH/C++ guard.
+
 ## [0.5.0] — 2026-05-31
 
 Multi-runtime release. FreezeLogger no longer pins Skyrim SE 1.5.97. It now

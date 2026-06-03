@@ -1,11 +1,19 @@
 #include "PCH.h"
 #include "snapshot/TaskPool.h"
 
+#include "Config.h"
+#include "Heartbeat.h"
 #include "SkyrimAnchors.h"
+#include "Symbols.h"
 #include "TaskPoolBaseline.h"
 
+#include <DbgHelp.h>
+#include <TlHelp32.h>
+
+#include <algorithm>
 #include <cstring>
 #include <string>
+#include <vector>
 
 namespace FreezeLogger::Snapshot::TaskPool {
 
@@ -190,6 +198,374 @@ namespace FreezeLogger::Snapshot::TaskPool {
                 }
             }
             return nullptr;
+        }
+
+        // ================================================================
+        // Stuck-job attribution
+        // ----------------------------------------------------------------
+        // When main is parked in WaitForJobTask on HANDLE H, that handle
+        // lives in one task-pool entry's handle_table. The producer that
+        // should SetEvent(H) is some worker thread currently processing a
+        // job from that queue. We can't read it from main, but a worker
+        // that owns the job almost always still holds a pointer to the
+        // entry / dispatch struct / handle table (or the bare handle value
+        // H itself) in a register or a saved stack slot. So: build a target
+        // set from the frozen pool capture + main's wait handle, then scan
+        // every other thread's registers and stack window for a hit and
+        // dump that thread's full stack. This automates the manual
+        // "cross-reference the Threads section" hint.
+        // ================================================================
+
+        constexpr std::size_t kAttribStackWindow = 0x800;   // 256 qwords
+        constexpr int         kMaxTargets        = 160;
+
+        // Heap-pointer heuristic: user-mode committed address, 8-aligned.
+        bool LooksLikeHeapPtr(std::uintptr_t v) noexcept {
+            return v >= 0x10000 &&
+                   v < 0x00007FFFFFFFFFFFull &&
+                   (v & 7) == 0;
+        }
+
+        // SEH-bounded: read main's RBX (the wait handle KERNELBASE leaves
+        // in the caller's RBX) from a captured CONTEXT-free path. We pass
+        // the already-read value in; this stays a pure helper.
+
+        // SEH-bounded stack scan. Returns the index into a_targets of the
+        // first matching qword in [rsp, rsp+window), or -1. Reports the
+        // matched value + byte offset for the report line.
+        int ScanStackForTargets(std::uintptr_t        a_rsp,
+                                 const std::uintptr_t* a_targets,
+                                 int                   a_count,
+                                 std::size_t           a_windowBytes,
+                                 std::uintptr_t&       a_outVal,
+                                 std::size_t&          a_outOff) noexcept
+        {
+            __try {
+                for (std::size_t off = 0; off < a_windowBytes;
+                     off += sizeof(std::uintptr_t)) {
+                    const auto v = *reinterpret_cast<volatile std::uintptr_t*>(
+                        a_rsp + off);
+                    for (int t = 0; t < a_count; ++t) {
+                        if (v == a_targets[t]) {
+                            a_outVal = v;
+                            a_outOff = off;
+                            return t;
+                        }
+                    }
+                }
+                return -1;
+            } __except (EXCEPTION_EXECUTE_HANDLER) {
+                return -1;
+            }
+        }
+
+        // RAII suspend/resume for one thread handle.
+        struct SuspendGuard {
+            HANDLE h;
+            bool   ok_;
+            explicit SuspendGuard(HANDLE a_h) noexcept : h(a_h) {
+                ok_ = h && (::SuspendThread(h) != static_cast<DWORD>(-1));
+            }
+            ~SuspendGuard() { if (ok_) ::ResumeThread(h); }
+            SuspendGuard(const SuspendGuard&)            = delete;
+            SuspendGuard& operator=(const SuspendGuard&) = delete;
+            bool ok() const noexcept { return ok_; }
+        };
+
+        // RAII close for a thread handle. Declared BEFORE any SuspendGuard so
+        // that, on scope exit, the suspend guard resumes the thread first and
+        // the handle is closed second.
+        struct HandleGuard {
+            HANDLE h;
+            explicit HandleGuard(HANDLE a_h) noexcept : h(a_h) {}
+            ~HandleGuard() { if (h) ::CloseHandle(h); }
+            HandleGuard(const HandleGuard&)            = delete;
+            HandleGuard& operator=(const HandleGuard&) = delete;
+        };
+
+        std::vector<DWORD> EnumerateThreads(DWORD a_pid) noexcept {
+            std::vector<DWORD> tids;
+            HANDLE snap = ::CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+            if (snap == INVALID_HANDLE_VALUE) return tids;
+            THREADENTRY32 te{};
+            te.dwSize = sizeof(te);
+            if (::Thread32First(snap, &te)) {
+                do {
+                    if (te.th32OwnerProcessID == a_pid) {
+                        tids.push_back(te.th32ThreadID);
+                    }
+                    te.dwSize = sizeof(te);
+                } while (::Thread32Next(snap, &te));
+            }
+            ::CloseHandle(snap);
+            return tids;
+        }
+
+        // Read main's wait handle (RBX). Suspends main briefly.
+        std::uintptr_t ReadMainWaitHandle(DWORD a_mainTid) noexcept {
+            if (a_mainTid == 0) return 0;
+            HANDLE h = ::OpenThread(
+                THREAD_GET_CONTEXT | THREAD_SUSPEND_RESUME |
+                    THREAD_QUERY_LIMITED_INFORMATION,
+                FALSE, a_mainTid);
+            if (!h) return 0;
+            std::uintptr_t handle = 0;
+            {
+                SuspendGuard sg{h};
+                if (sg.ok()) {
+                    CONTEXT ctx{};
+                    ctx.ContextFlags = CONTEXT_INTEGER;
+                    if (::GetThreadContext(h, &ctx)) {
+                        handle = static_cast<std::uintptr_t>(ctx.Rbx);
+                    }
+                }
+            }
+            ::CloseHandle(h);
+            return handle;
+        }
+
+        // Full symbolicated stack walk for one (already-suspended) thread.
+        void DumpThreadStack(std::ostream& a_os, HANDLE a_thread) {
+            CONTEXT ctx{};
+            ctx.ContextFlags = CONTEXT_FULL;
+            if (!::GetThreadContext(a_thread, &ctx)) {
+                a_os << "        <GetThreadContext failed>\n";
+                return;
+            }
+
+            STACKFRAME64 frame{};
+            frame.AddrPC.Mode    = AddrModeFlat;
+            frame.AddrFrame.Mode = AddrModeFlat;
+            frame.AddrStack.Mode = AddrModeFlat;
+            frame.AddrPC.Offset    = ctx.Rip;
+            frame.AddrFrame.Offset = ctx.Rbp;
+            frame.AddrStack.Offset = ctx.Rsp;
+
+            const int maxFrames = static_cast<int>(
+                std::max<std::uint32_t>(
+                    1u, Config::Get().snapshot.max_frames_per_stack));
+            int n = 0;
+
+            Symbols::Lock symLock;
+            while (n < maxFrames &&
+                   ::StackWalk64(IMAGE_FILE_MACHINE_AMD64,
+                                 ::GetCurrentProcess(), a_thread, &frame, &ctx,
+                                 nullptr, ::SymFunctionTableAccess64,
+                                 ::SymGetModuleBase64, nullptr)) {
+                if (frame.AddrPC.Offset == 0) break;
+                const auto pc = static_cast<std::uintptr_t>(frame.AddrPC.Offset);
+                a_os << std::format("        #{:02} 0x{:016x}  {}\n",
+                                    n, pc, Symbols::ResolveLocked(pc));
+                ++n;
+            }
+            if (n == 0) {
+                a_os << "        <stack walk produced no frames>\n";
+            }
+        }
+
+        // The 16 integer registers, in the order we fill them.
+        const char* const kRegNames[16] = {
+            "RAX", "RBX", "RCX", "RDX", "RSI", "RDI", "RBP", "RSP",
+            "R8",  "R9",  "R10", "R11", "R12", "R13", "R14", "R15",
+        };
+
+        // Probe one thread: open + suspend + scan registers/stack for any
+        // target. On a hit, emit a candidate block with the full stack.
+        // Returns true iff this thread matched. All resource lifetimes are
+        // RAII so there is exactly one CloseHandle and one ResumeThread per
+        // thread regardless of which path we take.
+        bool ProbeThread(std::ostream&               a_os,
+                         DWORD                       a_tid,
+                         const std::vector<std::uintptr_t>& a_tvals,
+                         const std::vector<std::string>&    a_tlabels)
+        {
+            HANDLE h = ::OpenThread(
+                THREAD_GET_CONTEXT | THREAD_SUSPEND_RESUME |
+                    THREAD_QUERY_LIMITED_INFORMATION,
+                FALSE, a_tid);
+            if (!h) return false;
+
+            HandleGuard hg{h};            // closes last
+            SuspendGuard sg{h};           // resumes first (declared after hg)
+            if (!sg.ok()) return false;
+
+            CONTEXT ctx{};
+            ctx.ContextFlags = CONTEXT_INTEGER | CONTEXT_CONTROL;
+            if (!::GetThreadContext(h, &ctx)) return false;
+
+            const std::uintptr_t regs[16] = {
+                ctx.Rax, ctx.Rbx, ctx.Rcx, ctx.Rdx,
+                ctx.Rsi, ctx.Rdi, ctx.Rbp, ctx.Rsp,
+                ctx.R8,  ctx.R9,  ctx.R10, ctx.R11,
+                ctx.R12, ctx.R13, ctx.R14, ctx.R15,
+            };
+
+            const int nTargets = static_cast<int>(a_tvals.size());
+
+            int regHitReg    = -1;
+            int regHitTarget = -1;
+            for (int r = 0; r < 16 && regHitTarget < 0; ++r) {
+                for (int t = 0; t < nTargets; ++t) {
+                    if (regs[r] == a_tvals[t]) {
+                        regHitReg    = r;
+                        regHitTarget = t;
+                        break;
+                    }
+                }
+            }
+
+            std::uintptr_t stackVal = 0;
+            std::size_t    stackOff = 0;
+            const int stackHitTarget = ScanStackForTargets(
+                static_cast<std::uintptr_t>(ctx.Rsp),
+                a_tvals.data(), nTargets,
+                kAttribStackWindow, stackVal, stackOff);
+
+            if (regHitTarget < 0 && stackHitTarget < 0) {
+                return false;
+            }
+
+            a_os << std::format("\n    >>> Candidate producer: TID {}\n", a_tid);
+            if (regHitTarget >= 0) {
+                a_os << std::format(
+                    "        match: {} == {} (0x{:016x})\n",
+                    kRegNames[regHitReg], a_tlabels[regHitTarget],
+                    a_tvals[regHitTarget]);
+            }
+            if (stackHitTarget >= 0) {
+                a_os << std::format(
+                    "        match: stack[rsp+0x{:x}] == {} (0x{:016x})\n",
+                    stackOff, a_tlabels[stackHitTarget], stackVal);
+            }
+            a_os << "        stack:\n";
+            DumpThreadStack(a_os, h);
+            return true;
+        }
+
+        void WriteJobAttribution(std::ostream&                   a_os,
+                                 const TaskPoolBaseline::Sample& a_frozen)
+        {
+            a_os << "\n";
+            a_os << "  ===== Stuck-job attribution (automated producer search) =====\n";
+
+            const auto mainTid = static_cast<DWORD>(Heartbeat::MainTid());
+            const auto selfTid = ::GetCurrentThreadId();
+            const auto pid     = ::GetCurrentProcessId();
+
+            const auto mainHandle = ReadMainWaitHandle(mainTid);
+            if (mainHandle == 0) {
+                a_os << "    <could not read main's wait handle (RBX); "
+                        "attribution skipped>\n";
+                return;
+            }
+            a_os << std::format(
+                "    Main (TID {}) wait handle: 0x{:x}\n", mainTid, mainHandle);
+
+            // Locate the entry whose handle_table holds main's handle.
+            int primaryEntry = -1;
+            for (int i = 0; i < a_frozen.populatedEntries && primaryEntry < 0; ++i) {
+                for (int j = 0;
+                     j < TaskPoolBaseline::Sample::kHandleTableWidth; ++j) {
+                    if (a_frozen.entries[i].handleTableWindow[j] == mainHandle) {
+                        primaryEntry = i;
+                        break;
+                    }
+                }
+            }
+            if (primaryEntry >= 0) {
+                a_os << std::format(
+                    "    Owning queue: entry[{}] @ 0x{:016x} "
+                    "(handle_table @ 0x{:016x})\n",
+                    primaryEntry, a_frozen.entries[primaryEntry].entryPtr,
+                    a_frozen.entries[primaryEntry].handleTablePtr);
+            } else {
+                a_os << "    Owning queue: main's handle is NOT in any captured "
+                        "entry handle_table\n"
+                        "      (it may live past the 8-entry cap, or the table "
+                        "moved). Searching all pool pointers anyway.\n";
+            }
+
+            // Build the target set (parallel value array for the SEH scan,
+            // labels for the report). Pool object pointers are strong, near-
+            // zero-false-positive signals; the bare handle value is a weaker
+            // but still useful signal.
+            std::vector<std::uintptr_t> tvals;
+            std::vector<std::string>    tlabels;
+            auto addTarget = [&](std::uintptr_t v, std::string label) {
+                if (v == 0) return;
+                if (static_cast<int>(tvals.size()) >= kMaxTargets) return;
+                for (auto existing : tvals) {
+                    if (existing == v) return;   // dedupe
+                }
+                tvals.push_back(v);
+                tlabels.push_back(std::move(label));
+            };
+
+            addTarget(a_frozen.singletonPtr, "Singleton-B instance");
+            addTarget(a_frozen.subArrayPtr,  "sub_array");
+            for (int i = 0; i < a_frozen.populatedEntries; ++i) {
+                const auto& e = a_frozen.entries[i];
+                const bool prim = (i == primaryEntry);
+                const char* tag = prim ? "PRIMARY " : "";
+                addTarget(e.entryPtr,
+                          std::format("{}entry[{}]", tag, i));
+                addTarget(e.handleTablePtr,
+                          std::format("{}entry[{}].handle_table", tag, i));
+                for (int k = 0; k < TaskPoolBaseline::Sample::kEntryWidth; ++k) {
+                    const auto v = e.entryWindow[k];
+                    if (LooksLikeHeapPtr(v)) {
+                        addTarget(v, std::format("{}entry[{}].field+0x{:x}",
+                                                 tag, i, k * 8));
+                    }
+                }
+            }
+            // The bare handle value (a producer about to signal it holds it).
+            addTarget(mainHandle, "main wait handle value");
+
+            a_os << std::format(
+                "    Scanning every thread for any of {} pool target(s) "
+                "(registers + 0x{:x} bytes of stack)...\n",
+                tvals.size(), kAttribStackWindow);
+
+            auto tids = EnumerateThreads(pid);
+            int  matches = 0;
+            int  scanned = 0;
+
+            for (const auto tid : tids) {
+                if (tid == selfTid || tid == mainTid) continue;
+                ++scanned;
+                try {
+                    if (ProbeThread(a_os, tid, tvals, tlabels)) {
+                        ++matches;
+                    }
+                } catch (...) {
+                    a_os << "        <attribution walk aborted for TID "
+                         << tid << ">\n";
+                }
+            }
+
+            a_os << "\n";
+            if (matches == 0) {
+                a_os << std::format(
+                    "    No candidate producer found among {} scanned thread(s).\n",
+                    scanned);
+                a_os << "    The responsible worker holds no pool pointer in its\n";
+                a_os << "    registers or top of stack — it has likely\n";
+                a_os << "    already returned from the job (orphaned signal), or is\n";
+                a_os << "    blocked deeper than the scan window (e.g. inside a\n";
+                a_os << "    kernel IO wait with the pool pointer spilled below the\n";
+                a_os << "    window). Cross-reference the Threads section for any\n";
+                a_os << "    worker parked in NtCreateFile/NtReadFile or a 3rd-party\n";
+                a_os << "    module.\n";
+            } else {
+                a_os << std::format(
+                    "    {} candidate producer thread(s) reference the stuck\n"
+                    "    queue. The one whose stack sits in an engine job-exec\n"
+                    "    frame (BSTaskPool / job worker) above a blocking call is\n"
+                    "    the most likely culprit; a PRIMARY-entry match is the\n"
+                    "    strongest signal.\n",
+                    matches);
+            }
         }
 
     }   // anonymous namespace
@@ -410,7 +786,14 @@ namespace FreezeLogger::Snapshot::TaskPool {
         a_os << "    lives somewhere in Skyrim's task pool — per the FSMP\n";
         a_os << "    maintainer (case-study 27 §0), the wait is unrelated\n";
         a_os << "    to hdtsmp64.dll even when an HDT-SMP frame is visible\n";
-        a_os << "    above the wait in main's stack.\n";
+        a_os << "    above the wait in main's stack. The automated search\n";
+        a_os << "    below does this cross-reference for you.\n";
+
+        // ===== Automated producer attribution ===========================
+        // Guarded by the surrounding Reporter::Section (SEH + C++). Suspends
+        // each worker briefly to read its context — same pattern as the
+        // Threads section, and safe at freeze time.
+        WriteJobAttribution(a_os, frozen);
     }
 
 }
