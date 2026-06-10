@@ -4,25 +4,28 @@
 
 namespace WorkerSpinLockFix::AcquireHook {
 
-    // Installs an entry-point inline hook on BSSpinLock::Acquire (id 12210)
-    // using safetyhook::create_inline. The detour does a surgical filter:
-    // only the two engine BSSpinLocks that participate in the documented
-    // AB-BA deadlock (LockA at SkyrimSE+0x2eff8e0, LockB at +0x2f3b8e8)
-    // do real work; every other BSSpinLock pays only one pointer compare
-    // and a tail-call. Cost on the uncontended common path is ~2 ns.
+    // Installs a MID-function hook at BSSpinLock::Acquire +0x8a (id 12210)
+    // using safetyhook::create_mid. +0x8a is the retry point inside the
+    // engine's OUTER backoff spin loop, reached only by a thread that has
+    // already exhausted the inner pause spin -- i.e. one that is genuinely
+    // stuck. The callback does a surgical filter: only the two engine
+    // BSSpinLocks that participate in the documented AB-BA deadlock (LockA
+    // at SkyrimSE+0x2eff8e0, LockB at +0x2f3b8e8) drive cycle detection.
+    //
+    // Unlike the previous entry-point inline hook, uncontended and
+    // recursive acquires -- the overwhelming majority -- never reach the
+    // hook and run entirely native (zero added per-acquire cost). Only the
+    // backoff loop of an actually-contended lock pays anything.
     //
     // Returns true on success.
     bool Install();
 
-    // Resolves the spin-retry RVA from id 12210 + 0x8a. Idempotent. Cached
-    // on first success. Returns 0 on failure. The reaper depends on this
-    // (it uses the address as a stack-walk pattern) so it must succeed
-    // even when AcquireHook itself is disabled or fails to install.
+    // Resolves the spin-retry RVA from id 12210 + 0x8a (the mid-hook
+    // target). Idempotent. Cached on first success. Returns 0 on failure.
     std::uintptr_t ResolveSpinRetryAddress() noexcept;
 
-    // Spin-retry RVA, exposed for the stale-owner reaper (Reaper.cpp).
-    // Returns 0 if neither Install() nor ResolveSpinRetryAddress() has
-    // succeeded yet.
+    // Spin-retry RVA. Returns 0 if neither Install() nor
+    // ResolveSpinRetryAddress() has succeeded yet.
     std::uintptr_t SpinRetryAddress() noexcept;
 
     // The two BSSpinLock pointers the surgical filter watches. Resolved

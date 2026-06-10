@@ -46,15 +46,19 @@ break_enabled = true
 # thread to detect a cycle claims the confirmation flow, sleeps this
 # long, then re-runs WaitGraph::VerifyCycleStillPresent. If the cycle
 # has self-resolved during the window the breaker stands down; if it
-# is still present the lock is force-released. A short window is fine
-# because a true deadlock is observed thousands of times per
-# millisecond, while a transient near-cycle resolves itself in
-# microseconds.
+# is still present the lock is force-released.
 #
-# Set to 0 to break on first detection without a wait (not recommended:
-# any near-cycle that the engine would have resolved on its own gets
-# broken anyway).
-confirmation_window_ms = 2
+# Since v2.1.0 the detector is a mid-hook on BSSpinLock::Acquire's
+# backoff spin loop that publishes SELF-EXPIRING wait edges (a stuck
+# thread refreshes its edge on every backoff iteration; one that
+# acquired the lock and moved on stops refreshing). This window must
+# stay LONGER than the 50 ms edge-staleness window so that any
+# participant which stopped spinning during confirmation has let its
+# edge expire before the verify step -- that is what prevents a
+# lingering stale edge from causing a spurious break. Do not set this
+# below ~70 ms. A real deadlock breaks ~120 ms after detection, which
+# is imperceptible next to the permanent freeze it replaces.
+confirmation_window_ms = 120
 
 # If true, the first observation of any new cycle signature, every
 # confirmation crossing, and every break attempt (success or race) are

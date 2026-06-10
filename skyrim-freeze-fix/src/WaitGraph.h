@@ -35,15 +35,32 @@ namespace WorkerSpinLockFix::WaitGraph {
     // the AcquireHook slow path.
     inline constexpr int kMaxHops = 16;
 
-    // Mark this thread as about to wait on `target`. Idempotent within a
-    // single slow-path entry. `target` must point to a Lock view.
+    // Publish (or refresh) the fact that `tid` is currently spinning on
+    // `target`, and stamp the edge's liveness time. `target` must point to
+    // a Lock view.
+    //
+    // Called from the BSSpinLock::Acquire spin-retry hook on every outer
+    // backoff iteration, so it doubles as "establish the edge" and "keep
+    // the edge alive". Returns true ONLY on the transition from "not
+    // waiting" / "waiting on a different lock" to "waiting on target", so
+    // callers can count distinct stuck episodes without inflating a stat on
+    // every backoff iteration.
+    //
+    // The spin-retry hook has no natural "stopped waiting" callback -- a
+    // thread that finally acquires the lock simply stops hitting the retry
+    // site -- so edges are SELF-EXPIRING: a published edge is honoured by
+    // the readers below only for a short window after its last refresh
+    // (see kEdgeStaleMs in WaitGraph.cpp). This replaces the exact
+    // EnterSlow/ExitSlow bracket the old entry-point hook provided.
     //
     // noexcept and heap-alloc-free: callable from inside a synchronization
     // primitive's acquire path without coupling that primitive to the heap
     // CRITICAL_SECTION.
-    void EnterSlow(DWORD tid, Lock* target) noexcept;
+    bool EnterSlow(DWORD tid, Lock* target) noexcept;
 
-    // Mark this thread as no longer waiting. Pair with EnterSlow.
+    // Proactively mark this thread as no longer waiting. Retained for
+    // completeness and for callers that DO have a clean release point; the
+    // spin-retry hook does not call it (it relies on self-expiry instead).
     void ExitSlow(DWORD tid) noexcept;
 
     // Walk the wait-for chain starting at `target`. If `me` (the thread
@@ -79,8 +96,10 @@ namespace WorkerSpinLockFix::WaitGraph {
 
     // Copy the currently-active wait edges into `out`, capped at `cap`.
     // Returns the number of edges written. Lock-free, allocation-free,
-    // safe to call from any thread. Skips slots whose `tid` is zero or
-    // whose `waiting_on` is null.
+    // safe to call from any thread. Skips slots whose `tid` is zero, whose
+    // `waiting_on` is null, or whose edge has expired (not refreshed within
+    // kEdgeStaleMs) -- so a thread that acquired its lock and moved on no
+    // longer appears here.
     //
     // The snapshot is racy by design: a slot's `waiting_on` may be
     // cleared by the owning thread between the load here and the

@@ -42,7 +42,8 @@ engine thread for any reason. See
 | v1.0.0 | Released 2026-05-21 | Runtime breaker only: surgical hook on `BSSpinLock::Acquire`, lock-free wait-for graph, time-based confirmation, force-release via `InterlockedCompareExchange`. |
 | v2.0.0 | Released 2026-05-22, superseded | Adds the structural fix as Layer 1. Three function-wrap inline hooks on `id 19369` / `id 40333` / `id 40334`. Silently broke scripted-animation activators (skyshards) because the wrap on `id 19369` declared 4 args for a 6-arg engine function, so arg 5 / arg 6 were read off uninitialised stack every invocation. |
 | v2.0.1 | Internal only | Three diagnostic cuts. Final fix: 6-arg `bool`-returning `unsafe_call<bool>` wrap signature; defensive bit-toggle and bool-return paths kept. Subsequent refactor in the same version label rebases the LockB gates from function-wraps onto two surgical `Trampoline::write_call<5>` patches at `id 36016+0xdcb` and `id 19372+0x606`. See [`../docs/case-study/24-v2-0-1-skyshard-regression-fix.md`](../docs/case-study/24-v2-0-1-skyshard-regression-fix.md) and [`../docs/case-study/25-v2-0-1-callsite-refactor.md`](../docs/case-study/25-v2-0-1-callsite-refactor.md). |
-| v2.0.3 | **Current.** Released 2026-05-24 | Reaper redesigned around `WaitGraph::SnapshotEdges`. All `SuspendThread` / `GetThreadContext` / `ResumeThread` / `Toolhelp32` / register+stack scanning code is gone from the runtime path. Owner-aliveness probe uses `OpenThread + GetExitCodeThread`. Coverage trade-off: the reaper now requires `[acquire_hook] enabled = true` to populate the wait graph. Phase 1.5 confirmed all six known acquirers go through `id 12210`, so the loss of coverage is theoretical against the bug this plugin targets. See [`../docs/case-study/26-reaper-snapshot-removed.md`](../docs/case-study/26-reaper-snapshot-removed.md). |
+| v2.0.3 | Released 2026-05-24, superseded | Reaper redesigned around `WaitGraph::SnapshotEdges`. All `SuspendThread` / `GetThreadContext` / `ResumeThread` / `Toolhelp32` / register+stack scanning code is gone from the runtime path. Owner-aliveness probe uses `OpenThread + GetExitCodeThread`. Coverage trade-off: the reaper now requires `[acquire_hook] enabled = true` to populate the wait graph. Phase 1.5 confirmed all six known acquirers go through `id 12210`, so the loss of coverage is theoretical against the bug this plugin targets. See [`../docs/case-study/26-reaper-snapshot-removed.md`](../docs/case-study/26-reaper-snapshot-removed.md). |
+| v2.1.0 | **Current.** | Layer 2 detector moved off the entry point of `BSSpinLock::Acquire` onto a `safetyhook` **mid-hook at `id 12210 +0x8a`** (the retry point inside the engine's backoff spin loop). Only genuinely-stuck threads reach it, so uncontended and recursive acquires now run fully native with **zero added per-acquire cost** -- removing hot-path overhead that stacked badly under framerate-amplifying mods (e.g. PureDark's upscaler). Wait-graph edges are now self-expiring (50 ms staleness window) since a mid-hook has no clean "stopped waiting" callback; `confirmation_window_ms` is raised to 120 ms (> the staleness window) so a stale edge provably expires before any force-release, preserving the no-spurious-break guarantee. |
 
 ## Scope
 
@@ -143,23 +144,29 @@ broken, the cycle cannot close.
 
 ### Layer 2 - Runtime breaker (v1.0, defence-in-depth)
 
-A single inline hook on `BSSpinLock::Acquire` (`id 12210`) via
-`safetyhook::create_inline`. The detour applies a **surgical filter**:
-only acquisitions of LockA or LockB do real work; every other
-`BSSpinLock` pays one pointer compare and a tail-call through the
-lock-free trampoline (~2 ns at 3 GHz).
+A single **mid-hook at `BSSpinLock::Acquire +0x8a`** (`id 12210`) via
+`safetyhook::create_mid` (v2.1.0; previously an inline hook on the
+function entry). `+0x8a` is the retry point inside the engine's outer
+backoff spin loop -- the uncontended fast path, recursive re-entry, and
+inner pause spin all return before it, so **only a genuinely-stuck
+thread reaches the hook**. Uncontended and recursive acquires run fully
+native with zero added cost; the callback applies a **surgical filter**
+so only LockA or LockB drive cycle detection.
 
-When the detour fires for LockA or LockB and the lock is contended,
-the plugin:
+When the hook fires for a contended LockA or LockB, the plugin:
 
-1. Marks the current thread as waiting on the target lock in a fixed-
-   size, lock-free wait-graph.
+1. Publishes/refreshes the current thread's wait edge (with a liveness
+   timestamp) in a fixed-size, lock-free wait-graph.
 2. Walks the wait-for chain. If it closes back to the current thread
    the cycle is reported to the breaker.
 3. The first observer of a given cycle signature claims the
-   confirmation flow: it sleeps `confirmation_window_ms` (default 2 ms),
-   then re-verifies the cycle is still topologically present.
-4. If the cycle has self-resolved, the breaker stands down.
+   confirmation flow: it sleeps `confirmation_window_ms` (default
+   120 ms, deliberately longer than the 50 ms edge-staleness window),
+   then re-verifies the cycle is still topologically present **and that
+   every participant's edge is still live**.
+4. If the cycle has self-resolved -- or any participant stopped
+   refreshing its edge during the window (e.g. a phantom built from a
+   stale edge) -- the breaker stands down.
 5. Otherwise the lock's `state` field is force-released via
    `InterlockedCompareExchange` and the spinning thread acquires it on
    its next spin iteration. The thread that thought it owned the
@@ -173,7 +180,7 @@ fire, that signals a cycle path the structural fix missed and the
 runtime breaker still catches it.
 
 A separate stale-owner reaper acts as an optional backstop for the
-case neither the entry-point hook nor the structural fix can
+case neither the spin-retry hook nor the structural fix can
 observe at runtime: a thread that died still holding a lock that
 another thread is now waiting on. As of v2.0.3 the reaper consumes
 a snapshot of the `WaitGraph` populated by the runtime breaker
@@ -244,9 +251,9 @@ is optional telemetry.
 | `[plugin]`         | `enabled`                   | `true`    | Master kill-switch. `false` loads the plugin idle (no hooks). |
 | `[log]`            | `stats_interval_s`          | `60`      | Periodic counter-dump interval. `0` disables. |
 | `[phase4_defer]`   | `enabled`                   | `true`    | v2.0 structural fix. If `false`, the LockA/LockB hooks are not installed and only the v1.0 runtime breaker runs. |
-| `[acquire_hook]`   | `enabled`                   | `true`    | v1.0 entry-point hook. Emergency kill-switch. |
+| `[acquire_hook]`   | `enabled`                   | `true`    | Layer 2 spin-retry mid-hook (`id 12210 +0x8a`). Emergency kill-switch. |
 | `[breaker]`        | `break_enabled`             | `true`    | If `false`, the breaker logs cycles but never force-releases anything (detect-only). |
-| `[breaker]`        | `confirmation_window_ms`    | `2`       | How long a cycle must remain present before being broken. |
+| `[breaker]`        | `confirmation_window_ms`    | `120`     | How long a cycle must remain present before being broken. Must exceed the 50 ms edge-staleness window; do not set below ~70 ms. |
 | `[breaker]`        | `log_cycle_events`          | `true`    | Log every cycle observation, confirmation, and break attempt. |
 | `[reaper]`         | `enabled`                   | `false`   | Stale-owner backstop (v2.0.3 WaitGraph-based scan; consumes wait edges populated by `[acquire_hook]`). Off by default. |
 | `[reaper]`         | `interval_ms`               | `30000`   | Reaper poll interval (ms). |
@@ -402,9 +409,10 @@ The output archive is written to `dist-out\WorkerSpinLockFix_v<X.Y.Z>.rar`.
   build other than 1.5.97. The Address Library ID for
   `BSSpinLock::Acquire` (`12210`) and the LockA/LockB RVAs only match
   this version.
-- **Surgical filter.** The slow path runs only for the two engine
-  BSSpinLocks the plugin watches. Every other `BSSpinLock::Acquire`
-  pays one pointer compare and a tail-call.
+- **Surgical filter.** The detection path runs only for the two engine
+  BSSpinLocks the plugin watches. Since the hook sits at the backoff
+  retry point (`+0x8a`), every `BSSpinLock::Acquire` that does not
+  seriously contend never reaches it at all and runs fully native.
 - **No heap allocation on the slow path.** Allocating from inside a
   `BSSpinLock::Acquire` detour puts the heap `CRITICAL_SECTION` on
   the BSSpinLock lock-order graph and creates a new deadlock class.
@@ -437,7 +445,7 @@ idle and the engine runs unmodified. As individual escape hatches:
 
 - `phase4_defer.enabled = false` disables the v2.0 structural fix.
   The v1.0 runtime breaker still detects and breaks cycles.
-- `acquire_hook.enabled = false` disables the v1.0 entry-point hook.
+- `acquire_hook.enabled = false` disables the Layer 2 spin-retry hook.
   The v2.0 structural fix continues to preempt cycles. **Note:**
   with v2.0.3, turning off `acquire_hook` also makes the optional
   reaper a no-op even when `[reaper] enabled = true`, because the

@@ -15,12 +15,54 @@ namespace WorkerSpinLockFix::WaitGraph {
         constexpr std::size_t kMaxThreads = 64;
 
         struct alignas(64) ThreadSlot {
-            std::atomic<DWORD> tid{ 0 };
-            std::atomic<Lock*> waiting_on{ nullptr };
+            std::atomic<DWORD>         tid{ 0 };
+            std::atomic<Lock*>         waiting_on{ nullptr };
+            std::atomic<std::uint64_t> last_seen_ms{ 0 };
         };
 
         std::array<ThreadSlot, kMaxThreads> g_slots;
         thread_local ThreadSlot*            tls_self = nullptr;
+
+        // A published wait edge is only honoured for this long after its
+        // last refresh. The spin-retry hook (BSSpinLock::Acquire +0x8a)
+        // refreshes a genuinely-stuck thread's edge on every outer backoff
+        // iteration -- in the steady deadlock state that is once per the
+        // engine's Sleep(1)-class yield, i.e. roughly every 1-16 ms
+        // depending on the process timer resolution. 50 ms gives at least a
+        // ~3x margin over the slowest refresh cadence, so a thread that is
+        // really still spinning never looks stale, while a thread that
+        // acquired its lock and moved on (and therefore stops hitting the
+        // retry site) drops out of the graph within 50 ms.
+        //
+        // This window is the replacement for the exact ExitSlow bracket the
+        // old entry-point hook provided. CRITICAL invariant: the Breaker's
+        // confirmation_window_ms is configured LONGER than this value (see
+        // Config.h / WorkerSpinLockFix.toml), so any edge that stops
+        // refreshing during the confirmation sleep has provably expired by
+        // the time VerifyCycleStillPresent runs. That is what prevents a
+        // moved-on thread's lingering edge from causing a spurious break.
+        constexpr std::uint64_t kEdgeStaleMs = 50;
+
+        std::uint64_t NowMs() noexcept {
+            return ::GetTickCount64();
+        }
+
+        // Load `slot`'s published wait target, but only if it was refreshed
+        // within kEdgeStaleMs of `now`. Returns nullptr for an empty or
+        // expired slot. Clock-skew safe: if `seen` is somehow ahead of
+        // `now` the edge is treated as fresh rather than expired.
+        Lock* LiveWaitingOn(const ThreadSlot& slot, std::uint64_t now) noexcept {
+            Lock* w = slot.waiting_on.load(std::memory_order_acquire);
+            if (w == nullptr) {
+                return nullptr;
+            }
+            const std::uint64_t seen =
+                slot.last_seen_ms.load(std::memory_order_acquire);
+            if (now > seen && now - seen > kEdgeStaleMs) {
+                return nullptr;
+            }
+            return w;
+        }
 
         // Lazily registers a slot for the current thread. May fail if all
         // slots are taken; in that case it returns nullptr and the thread
@@ -72,12 +114,18 @@ namespace WorkerSpinLockFix::WaitGraph {
         // values at zero/null which is what we want.
     }
 
-    void EnterSlow(DWORD tid, Lock* target) noexcept {
+    bool EnterSlow(DWORD tid, Lock* target) noexcept {
         auto* self = Self(tid);
         if (self == nullptr) {
-            return;
+            return false;
         }
+        Lock* const prev = self->waiting_on.load(std::memory_order_acquire);
+        // Stamp the liveness time BEFORE publishing the edge. The release
+        // store on `waiting_on` then publishes the fresh timestamp to any
+        // reader that acquire-loads `waiting_on` and sees this target.
+        self->last_seen_ms.store(NowMs(), std::memory_order_release);
         self->waiting_on.store(target, std::memory_order_release);
+        return prev != target;
     }
 
     void ExitSlow(DWORD tid) noexcept {
@@ -97,6 +145,14 @@ namespace WorkerSpinLockFix::WaitGraph {
         if (target == nullptr || out == nullptr || max_hops <= 0) {
             return 0;
         }
+
+        // `target` is the lock `me` is spinning on right now (read live from
+        // the hook), so it needs no staleness gate. Every subsequent hop
+        // follows another thread's PUBLISHED edge, which must be live
+        // (refreshed within kEdgeStaleMs) to be trusted -- otherwise a
+        // thread that already acquired its lock and moved on could
+        // contribute a phantom link to the chain.
+        const std::uint64_t now = NowMs();
 
         DWORD waiter = me;
         Lock* lock   = target;
@@ -122,8 +178,7 @@ namespace WorkerSpinLockFix::WaitGraph {
             if (owner_slot == nullptr) {
                 return 0;
             }
-            Lock* next_lock =
-                owner_slot->waiting_on.load(std::memory_order_acquire);
+            Lock* next_lock = LiveWaitingOn(*owner_slot, now);
             if (next_lock == nullptr) {
                 return 0;
             }
@@ -141,6 +196,13 @@ namespace WorkerSpinLockFix::WaitGraph {
         if (cycle == nullptr || cycle_len < 2) {
             return false;
         }
+        // This runs AFTER the breaker has slept confirmation_window_ms,
+        // which is configured longer than kEdgeStaleMs. Each participant's
+        // edge is therefore required to still be LIVE: a thread that stopped
+        // spinning during the confirmation window (because it acquired the
+        // lock, or because the cycle was a phantom built from a stale edge)
+        // has, by construction, let its edge expire and fails this check.
+        const std::uint64_t now = NowMs();
         for (int i = 0; i < cycle_len; ++i) {
             const auto& p = cycle[i];
             if (p.waiting_on == nullptr) {
@@ -154,8 +216,7 @@ namespace WorkerSpinLockFix::WaitGraph {
             if (slot == nullptr) {
                 return false;
             }
-            Lock* current_target =
-                slot->waiting_on.load(std::memory_order_acquire);
+            Lock* current_target = LiveWaitingOn(*slot, now);
             if (current_target != p.waiting_on) {
                 return false;
             }
@@ -167,6 +228,7 @@ namespace WorkerSpinLockFix::WaitGraph {
         if (out == nullptr || cap <= 0) {
             return 0;
         }
+        const std::uint64_t now = NowMs();
         int n = 0;
         for (auto& slot : g_slots) {
             if (n >= cap) {
@@ -174,9 +236,11 @@ namespace WorkerSpinLockFix::WaitGraph {
             }
             const DWORD tid =
                 slot.tid.load(std::memory_order_acquire);
-            Lock* const wait =
-                slot.waiting_on.load(std::memory_order_acquire);
-            if (tid != 0 && wait != nullptr) {
+            if (tid == 0) {
+                continue;
+            }
+            Lock* const wait = LiveWaitingOn(slot, now);
+            if (wait != nullptr) {
                 out[n++] = EdgeView{ tid, wait };
             }
         }

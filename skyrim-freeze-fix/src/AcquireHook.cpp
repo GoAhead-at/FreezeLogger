@@ -15,7 +15,7 @@ namespace WorkerSpinLockFix::AcquireHook {
         constexpr std::uintptr_t kLockA_RVA = 0x2eff8e0;
         constexpr std::uintptr_t kLockB_RVA = 0x2f3b8e8;
 
-        SafetyHookInline   g_acquire_hook{};
+        SafetyHookMid      g_spin_retry_hook{};
         std::uintptr_t     g_spin_retry_addr{ 0 };
         std::atomic<bool>  g_installed{ false };
 
@@ -39,81 +39,72 @@ namespace WorkerSpinLockFix::AcquireHook {
         WaitGraph::Lock*   g_test_lockA{ nullptr };
         WaitGraph::Lock*   g_test_lockB{ nullptr };
 
-        // The hot path.
+        // The detection path -- a COLD path by construction.
         //
-        // SURGICAL FILTER: 99.999% of BSSpinLock::Acquire calls in the
-        // engine touch locks that are not LockA or LockB. Those calls
-        // pay only one comparison against a constant + one branch + one
-        // tail-call to the trampoline (~2 ns at 3 GHz). The slow path
-        // and wait-graph machinery only run for LockA and LockB, which
-        // are contended at most a handful of times per second.
+        // This is a safetyhook MID-hook planted at BSSpinLock::Acquire
+        // +0x8a (id 12210), the instruction immediately after the engine's
+        // backoff-yield call inside the OUTER spin loop and immediately
+        // before the retry CAS. The disassembly that fixes this offset is
+        // in analysis/dump_acquire.py; the salient facts:
         //
-        // For the two surgical locks themselves these rules apply:
+        //   - The uncontended fast path (lock free) and the recursive
+        //     re-entry path both return long before +0x8a. The inner
+        //     `_mm_pause` spin (bounded by the engine's iLimit) also exits
+        //     before +0x8a. ONLY a thread that has exhausted the inner
+        //     spin AND returned from at least one yield reaches here -- the
+        //     genuinely-stuck population. So unlike the old entry-point
+        //     inline hook, the ~99.99% of acquires that never seriously
+        //     contend pay ZERO overhead: they run entirely native.
+        //   - At +0x8a the lock pointer `self` is in RDI (set at function
+        //     entry, callee-saved, never reassigned in the body) and the
+        //     owning thread id is in EBP. We read `self` from ctx.rdi and
+        //     take `me` from GetCurrentThreadId() (identical to EBP, but
+        //     robust against any register-analysis error since the callback
+        //     runs on the very thread that is spinning).
+        //   - We do NOT call any trampoline. A mid-hook is observational:
+        //     after this callback returns, safetyhook re-executes the
+        //     displaced instructions and the engine's own spin loop
+        //     continues. The breaker unsticks a confirmed cycle by CASing
+        //     the lock's state 1->0, which lets the engine's own retry CAS
+        //     at +0x8c succeed.
         //
-        //   - state (+0x4) IS authoritative for "held". 0 = free, 1 = held.
-        //     owner (+0x0) is NOT (engine does not always clear it).
-        //   - No heap allocation on this path. Allocating here puts the
-        //     heap CRITICAL_SECTION on the BSSpinLock lock-order graph
-        //     and deadlocks against legitimate engine paths.
-        //   - No std::mutex on this path. SRWLocks under std::mutex
-        //     create the same lock-order edge.
-        //   - No spdlog calls on this path (logging is gated to actual
-        //     cycle observations only, which run rarely).
-        //
-        // CRITICAL: we MUST use safetyhook::InlineHook::unsafe_call rather
-        // than .call<>(). The latter takes a std::recursive_mutex (m_mutex)
-        // for thread-safe install/uninstall coordination. With ~300 engine
-        // threads each routing every BSSpinLock::Acquire through this
-        // hook, that mutex would serialise every acquire across all
-        // threads and create a global SRWLock-vs-BSSpinLock lock-order
-        // edge sufficient to freeze early engine initialisation.
-        // unsafe_call skips the mutex and just tail-calls through the
-        // trampoline. We never uninstall the hook at runtime, so we
-        // cannot race with installation/destruction either.
-        void __fastcall HookedAcquire(WaitGraph::Lock* self) {
-            // SURGICAL FILTER. Up to four pointer compares against
-            // constants. Branch predictor sees one outcome ~always
-            // (taken: bypass). g_test_lockA / g_test_lockB are normally
-            // both nullptr, so the two extra compares cost ~zero in
-            // production; they only ever become non-null when TestMode
-            // is explicitly enabled in the TOML.
+        // Lock-order safety (unchanged from the old design): at +0x8a the
+        // thread holds NO BSSpinLock -- it is trying to acquire one. So the
+        // SRWLock/std::mutex and the sleep taken inside Breaker::
+        // OnCycleDetected (only when chain_len >= 2, i.e. rarely) cannot
+        // introduce a (BSSpinLock -> SRWLock) lock-order edge. EnterSlow and
+        // WouldFormCycle are heap-allocation-free.
+        void OnSpinRetry(SafetyHookContext& ctx) {
+            auto* self = reinterpret_cast<WaitGraph::Lock*>(ctx.rdi);
+
+            // SURGICAL FILTER. Up to four pointer compares. g_test_lockA /
+            // g_test_lockB are normally both nullptr, so they never match a
+            // real BSSpinLock; they only become non-null when TestMode is
+            // explicitly enabled in the TOML.
             if (self != g_lockA && self != g_lockB &&
                 self != g_test_lockA && self != g_test_lockB) {
-                g_acquire_hook.unsafe_call<void>(self);
-                return;
-            }
-
-            // Fast path A: lock is free.
-            if (self->state == 0) {
-                g_acquire_hook.unsafe_call<void>(self);
                 return;
             }
 
             const DWORD me = ::GetCurrentThreadId();
 
-            // Fast path B: recursive acquire (we already own it).
-            if (self->owner == me) {
-                g_acquire_hook.unsafe_call<void>(self);
-                return;
+            // Publish / refresh our wait edge. EnterSlow returns true only
+            // on the first publish of this target for this thread, so the
+            // slow-path counter measures distinct stuck episodes rather
+            // than backoff iterations.
+            if (WaitGraph::EnterSlow(me, self)) {
+                Stats::OnAcquireSlow();
             }
-
-            // Slow path: contended LockA or LockB.
-            Stats::OnAcquireSlow();
 
             std::array<WaitGraph::CycleParticipant,
                        WaitGraph::kMaxHops> chain;
 
-            WaitGraph::EnterSlow(me, self);
             const int chain_len = WaitGraph::WouldFormCycle(
                 me, self, chain.data(),
                 static_cast<int>(chain.size()));
             if (chain_len >= 2) {
                 Breaker::OnCycleDetected(me, self, chain.data(), chain_len);
             }
-
-            g_acquire_hook.unsafe_call<void>(self);
-
-            WaitGraph::ExitSlow(me);
         }
 
     } // namespace
@@ -177,46 +168,42 @@ namespace WorkerSpinLockFix::AcquireHook {
             return false;
         }
 
-        try {
-            const REL::Relocation<std::uintptr_t> acquire{ REL::ID(12210) };
-            const auto target = acquire.address();
-            g_spin_retry_addr = target + 0x8a;
-
-            auto inline_hook = safetyhook::create_inline(
-                reinterpret_cast<void*>(target),
-                reinterpret_cast<void*>(&HookedAcquire));
-
-            if (!inline_hook) {
-                logs::critical(
-                    "[AcquireHook] safetyhook::create_inline FAILED at "
-                    "0x{:x}; entry-point hook is not active.",
-                    target);
-                g_installed.store(false, std::memory_order_release);
-                return false;
-            }
-
-            g_acquire_hook = std::move(inline_hook);
-
-            logs::info(
-                "[AcquireHook] surgical entry-point hook installed on "
-                "BSSpinLock::Acquire (id 12210, addr=0x{:x}, "
-                "spin_retry=0x{:x}).",
-                target,
-                g_spin_retry_addr);
-            logs::info(
-                "[AcquireHook] surgical filter targets: LockA=0x{:x} "
-                "(RVA 0x{:x}), LockB=0x{:x} (RVA 0x{:x}). All other "
-                "BSSpinLocks fast-path bypass our slow path.",
-                reinterpret_cast<std::uintptr_t>(g_lockA), kLockA_RVA,
-                reinterpret_cast<std::uintptr_t>(g_lockB), kLockB_RVA);
-            return true;
-        } catch (const std::exception& e) {
+        const auto retry_addr = ResolveSpinRetryAddress();
+        if (retry_addr == 0) {
             logs::critical(
-                "[AcquireHook] failed to resolve/hook BSSpinLock::Acquire: "
-                "{}", e.what());
+                "[AcquireHook] spin-retry address (id 12210 + 0x8a) not "
+                "resolved; aborting hook install.");
             g_installed.store(false, std::memory_order_release);
             return false;
         }
+
+        auto mid_hook = safetyhook::create_mid(
+            reinterpret_cast<void*>(retry_addr), &OnSpinRetry);
+
+        if (!mid_hook) {
+            logs::critical(
+                "[AcquireHook] safetyhook::create_mid FAILED at 0x{:x}; "
+                "spin-retry hook is not active.",
+                retry_addr);
+            g_installed.store(false, std::memory_order_release);
+            return false;
+        }
+
+        g_spin_retry_hook = std::move(mid_hook);
+
+        logs::info(
+            "[AcquireHook] spin-retry mid-hook installed at "
+            "BSSpinLock::Acquire+0x8a (id 12210, addr=0x{:x}). Uncontended "
+            "and recursive acquires run fully native; only a watched lock's "
+            "outer backoff loop enters cycle detection.",
+            retry_addr);
+        logs::info(
+            "[AcquireHook] surgical filter targets: LockA=0x{:x} "
+            "(RVA 0x{:x}), LockB=0x{:x} (RVA 0x{:x}). All other "
+            "BSSpinLocks are invisible to the detector.",
+            reinterpret_cast<std::uintptr_t>(g_lockA), kLockA_RVA,
+            reinterpret_cast<std::uintptr_t>(g_lockB), kLockB_RVA);
+        return true;
     }
 
 }

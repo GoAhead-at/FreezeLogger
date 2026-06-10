@@ -140,14 +140,20 @@ namespace WorkerSpinLockFix::Breaker {
 
     // Confirmation flow (time-based):
     //
-    // A naive observation-counting approach (confirm once a signature
-    // has been seen N times within a window) would fail for a clean
-    // 2-thread AB-BA: each thread enters BSSpinLock::Acquire exactly
-    // once and then stays inside the engine's internal spin/SleepEx
-    // loop forever, so only one observation arrives. The cycle would
-    // be detected but never confirmed and never broken.
+    // Time-based confirmation is correct for any cycle topology. Since
+    // v2.1.0 the detector is a mid-hook on BSSpinLock::Acquire's outer
+    // backoff loop, so a stuck thread re-reports its wait edge on every
+    // backoff iteration; a clean 2-thread AB-BA therefore produces a
+    // steady stream of observations rather than a single one. We still
+    // use the time-based flow (not observation counting) for two reasons:
+    // it is robust regardless of observation cadence, and -- critically --
+    // the confirmation sleep is configured LONGER than WaitGraph's
+    // kEdgeStaleMs, so any participant that STOPS refreshing during the
+    // window (it acquired the lock, or the "cycle" was a phantom built
+    // from a stale edge) has its edge expire before VerifyCycleStillPresent
+    // runs, and the break is suppressed. See Config.h confirmation_window_ms.
     //
-    // The flow we use instead is:
+    // The flow we use is:
     //
     //   1. First observer of a given signature claims it (breaker_claimed
     //      = true) and is responsible for the confirmation flow.
@@ -284,10 +290,12 @@ namespace WorkerSpinLockFix::Breaker {
             return;
         }
 
-        // Re-verify the cycle is still topologically present. Engine
-        // contention often resolves itself in microseconds; we do not
-        // want to force-release a cycle that has already self-cleared
-        // during the confirmation window.
+        // Re-verify the cycle is still topologically present AND that
+        // every participant's wait edge is still live (refreshed within
+        // kEdgeStaleMs). Because we slept confirmation_window_ms > the
+        // staleness window, any thread that resolved or moved on during
+        // the window has let its edge expire and fails this check, so we
+        // do not force-release a cycle that has already self-cleared.
         if (!WaitGraph::VerifyCycleStillPresent(cycle, cycle_len)) {
             Stats::OnBreakRaced();
             if (cfg.log_cycle_events) {

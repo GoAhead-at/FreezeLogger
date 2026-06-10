@@ -17,10 +17,12 @@ The plugin layers two independent fixes for the same engine bug:
    of `id 40333` / `id 40334` are left pristine so other mods
    that hook those functions cooperate with this plugin.
 2. **Layer 2 - Runtime breaker (`AcquireHook` + `WaitGraph` +
-   `Breaker`, v1.0).** A surgical inline hook on
-   `BSSpinLock::Acquire (id 12210)` detects cycles that form
-   anyway (cycle paths the structural fix misses) and force-
-   releases one lock so the spinning thread proceeds.
+   `Breaker`, v1.0; mid-hook since v2.1.0).** A surgical mid-hook at
+   `BSSpinLock::Acquire (id 12210) +0x8a` -- the retry point inside
+   the engine's backoff spin loop, reached only by genuinely-stuck
+   threads -- detects cycles that form anyway (cycle paths the
+   structural fix misses) and force-releases one lock so the spinning
+   thread proceeds. Uncontended acquires never reach the hook.
 
 Layer 1 is the primary fix. Layer 2 is defence-in-depth: with the
 structural fix active and healthy it should never fire.
@@ -198,39 +200,64 @@ retrospective in
 
 ### 2.2 Layer 2 - Runtime breaker
 
-The plugin retains v1.0's **detect-and-break at the spinlock level**:
+The plugin retains v1.0's **detect-and-break at the spinlock level**.
+Since **v2.1.0** the detector is a `safetyhook` **mid-hook at
+`BSSpinLock::Acquire +0x8a`** (id 12210) rather than an inline hook on
+the function entry. `+0x8a` is the retry point inside the engine's
+*outer* backoff spin loop, immediately after its yield call and just
+before the retry CAS:
 
 ```
                                   ┌──────────────┐
                                   │ BSSpinLock   │
-                                  │ ::Acquire    │
-                                  │ (id 12210)   │
-                                  └──────┬───────┘
-                                         │ inline hook
+                                  │ ::Acquire    │   uncontended / recursive /
+                                  │ (id 12210)   │   inner-pause-spin success
+                                  └──────┬───────┘   ── all return NATIVE,
+                                         │              never reaching +0x8a
+                          outer backoff loop (genuinely stuck)
+                                         │ mid-hook @ +0x8a
                                          ▼
-              ┌─────────────────── HookedAcquire ────────────────────┐
+              ┌─────────────────── OnSpinRetry(ctx) ──────────────────┐
+              │  self = ctx.rdi   me = GetCurrentThreadId()           │
               │                                                       │
               │  surgical filter:                                     │
-              │    self == LockA || self == LockB? ──── no ──→ trampoline
+              │    self == LockA/LockB (or test locks)? ── no ──→ return
               │       │                                               │
               │      yes                                              │
               │       ▼                                               │
-              │  state == 0?  ─── yes (uncontended) ──→ trampoline    │
-              │       │                                               │
-              │      no (contended)                                   │
-              │       ▼                                               │
-              │  WaitGraph::EnterSlow(me, self)                       │
+              │  WaitGraph::EnterSlow(me, self)   // publish+refresh   │
               │  WaitGraph::WouldFormCycle(me, self, …)               │
               │       │                                               │
-              │       ├── chain >= 2 ───▶ Breaker::OnCycleDetected    │
-              │       │                                               │
-              │       ▼                                               │
-              │     trampoline (engine spin loop)                     │
-              │       │                                               │
-              │       ▼                                               │
-              │  WaitGraph::ExitSlow(me)                              │
+              │       └── chain >= 2 ───▶ Breaker::OnCycleDetected    │
+              │                                                       │
+              │  (return; engine's own spin loop continues natively)  │
               └───────────────────────────────────────────────────────┘
 ```
+
+Why the mid-hook: the old entry-point inline hook routed **every**
+`BSSpinLock::Acquire` (across ~300 engine threads, millions of calls
+per second) through a detour + filter + trampoline tail-call. That
+fixed per-acquire cost was invisible at a 60 fps cap but became
+measurable when stacked under framerate-amplifying mods (e.g.
+PureDark's upscaler) that multiply acquire throughput and push the
+build CPU-bound. `+0x8a` is reached **only** by a thread that has
+exhausted the inner pause spin and returned from a yield -- the
+genuinely-stuck population -- so uncontended and recursive acquires
+now run **fully native with zero added cost**.
+
+Lifecycle without a bracket: a mid-hook has no "stopped waiting"
+callback (a thread that finally acquires the lock simply stops hitting
+`+0x8a`). So `WaitGraph` edges are **self-expiring**: `EnterSlow`
+stamps a refresh time on every backoff iteration, and all readers
+(`WouldFormCycle`, `VerifyCycleStillPresent`, `SnapshotEdges`) honour
+an edge only within `kEdgeStaleMs` (50 ms) of its last refresh. To keep
+this from ever causing a *spurious* break, the breaker's
+`confirmation_window_ms` is raised to **120 ms (> the staleness
+window)**: any participant that stops refreshing during confirmation
+(it acquired the lock, or the "cycle" was a phantom from a lingering
+stale edge) has its edge expire before `VerifyCycleStillPresent` runs,
+so the break is suppressed. A real deadlock keeps every edge fresh and
+breaks ~120 ms after detection.
 
 We did not pursue function-entry serialisation (gating the engine
 functions that take LockA/LockB behind a plugin mutex) because every
@@ -239,13 +266,12 @@ heap `CRITICAL_SECTION` or against the engine's own `BSSpinLock`s -
 see `11-worker-spinlockfix-retrospective.md` for the full set of
 lessons.
 
-The Layer 2 design is **invisible in normal play** (one pointer
-compare per `BSSpinLock::Acquire` for non-target locks) and acts
-only when a real AB-BA cycle is observed, confirmed, and
-re-verified. The Layer 1 design is similarly cheap: one
-thread-local read per `id 40333` / `id 40334` entry on the common
-(pass-through) path, plus one increment/decrement per `id 19369`
-entry/exit.
+The Layer 2 design is **invisible in normal play** (the hook fires only
+inside the backoff loop of one of the two watched locks) and acts only
+when a real AB-BA cycle is observed, confirmed, and re-verified. The
+Layer 1 design is similarly cheap: one thread-local read per `id 40333`
+/ `id 40334` entry on the common (pass-through) path, plus one
+increment/decrement per `id 19369` entry/exit.
 
 ---
 
@@ -347,16 +373,30 @@ allocation under normal load.
 
 ### 3.2. `AcquireHook`
 
-Installs a single `safetyhook::create_inline` hook on
-`BSSpinLock::Acquire` (`id 12210`).
+Installs a single `safetyhook::create_mid` hook at
+`BSSpinLock::Acquire +0x8a` (`id 12210`). `+0x8a` was fixed by
+disassembling the function (see `analysis/dump_acquire.py`): it is the
+instruction after the engine's backoff-yield call and before the retry
+CAS, inside the *outer* spin loop. The uncontended fast path, the
+recursive re-entry path, and the inner `_mm_pause` spin all return
+before `+0x8a`, so **only a genuinely-stuck thread reaches the hook**.
 
-The detour applies a four-pointer **surgical filter**:
+The callback reads `self` from `ctx.rdi` (the lock pointer, callee-saved
+for the whole function) and `me` from `GetCurrentThreadId()`, then
+applies a four-pointer **surgical filter**:
 
 ```cpp
-if (self != g_lockA && self != g_lockB &&
-    self != g_test_lockA && self != g_test_lockB) {
-    g_acquire_hook.unsafe_call<void>(self);   // tail-call
-    return;
+void OnSpinRetry(SafetyHookContext& ctx) {
+    auto* self = reinterpret_cast<WaitGraph::Lock*>(ctx.rdi);
+    if (self != g_lockA && self != g_lockB &&
+        self != g_test_lockA && self != g_test_lockB) {
+        return;                              // not a watched lock
+    }
+    const DWORD me = ::GetCurrentThreadId();
+    if (WaitGraph::EnterSlow(me, self)) {    // publish + refresh edge
+        Stats::OnAcquireSlow();              // count distinct episodes
+    }
+    // ... WouldFormCycle -> Breaker::OnCycleDetected if chain >= 2
 }
 ```
 
@@ -366,39 +406,47 @@ SkyrimSE.exe module base + the documented RVAs. `g_test_lockA` and
 to any real BSSpinLock pointer); they only become non-null when the
 optional test mode is enabled.
 
-For a target lock the detour follows the rules below:
+Key properties of the mid-hook approach:
 
-- `state` (`+0x4`) is authoritative for "held". `0` = free,
-  `1` = held. `owner` (`+0x0`) is **not** authoritative because the
-  engine does not always clear it on release.
-- Fast paths (uncontended free + recursive same-thread acquire)
-  tail-call the trampoline immediately.
-- The slow path runs only for contended LockA / LockB and calls into
-  `WaitGraph` and `Breaker`.
-
-`safetyhook::InlineHook::unsafe_call` is used everywhere the
-trampoline is invoked. The library's `call<>` variant takes an
-internal `std::recursive_mutex` for thread-safe install/uninstall;
-with ~300 engine threads each routing through the hook, that mutex
-would serialise every acquire across all threads. We never
-uninstall the hook at runtime, so we cannot race with installation
-or destruction either way.
+- **No trampoline.** A mid-hook is observational: after the callback
+  returns, `safetyhook` re-executes the displaced instructions and the
+  engine's own spin loop continues. The breaker unsticks a confirmed
+  cycle by CASing the lock's `state` `1->0`, which lets the engine's
+  own retry CAS at `+0x8c` succeed. There is no `unsafe_call`/`call<>`
+  trampoline and therefore none of the per-acquire serialisation the
+  old entry-point hook had to reason about.
+- **Zero cost off the contended path.** Acquires that do not seriously
+  contend never reach `+0x8a`, so the common case runs entirely native.
+- **`state` (`+0x4`) is authoritative for "held"** (`0` = free,
+  `1` = held); `owner` (`+0x0`) is not, because the engine does not
+  always clear it on release.
+- **Lock-order safety.** At `+0x8a` the thread holds no BSSpinLock (it
+  is trying to acquire one), so the SRWLock/sleep taken inside
+  `Breaker::OnCycleDetected` (only when a cycle is found) cannot create
+  a `BSSpinLock -> SRWLock` edge.
 
 ### 3.3. `WaitGraph`
 
 A fixed-size, lock-free wait-for graph. Each thread that enters the
 slow path claims one of 64 cache-aligned slots (lazily, from a
-thread-local cache) and writes its `waiting_on` pointer into that
-slot:
+thread-local cache) and writes its `waiting_on` pointer plus a refresh
+timestamp into that slot:
 
 ```cpp
 struct alignas(64) ThreadSlot {
-    std::atomic<DWORD>  tid;
-    std::atomic<Lock*>  waiting_on;
+    std::atomic<DWORD>          tid;
+    std::atomic<Lock*>          waiting_on;
+    std::atomic<std::uint64_t>  last_seen_ms;   // self-expiry (v2.1.0)
 };
 
 std::array<ThreadSlot, 64> g_slots;
 ```
+
+Because the spin-retry mid-hook has no "stopped waiting" callback,
+`EnterSlow` re-stamps `last_seen_ms` on every backoff iteration and all
+readers ignore an edge older than `kEdgeStaleMs` (50 ms). A thread that
+acquires its lock stops refreshing and drops out of the graph within
+that window; a still-spinning thread stays visible.
 
 `WouldFormCycle` walks the wait-for chain by reading `target->owner`,
 looking up that owner's slot, reading `slot.waiting_on`, and
@@ -506,7 +554,7 @@ real engine cycle to fire (which is rare and timing-dependent).
 
 ## 4. Slow-path invariants
 
-These rules govern any code that runs inside `HookedAcquire`'s slow
+These rules govern any code that runs inside `OnSpinRetry`'s detection
 path (when `WouldFormCycle` returns ≥ 2 and `Breaker::OnCycleDetected`
 is called). Every iteration of this plugin that violated one of them
 produced a freeze.
@@ -583,8 +631,8 @@ the outcome (both threads drain shortly after the release).
      `WaitGraph` edges directly), but resolution stays
      unconditional so toggling the entry-point hook on at runtime
      has zero resolution cost.
-   - `AcquireHook::Install()` (Layer 2 entry-point inline hook),
-     gated by `acquire_hook.enabled`.
+   - `AcquireHook::Install()` (Layer 2 spin-retry mid-hook at
+     `id 12210 +0x8a`), gated by `acquire_hook.enabled`.
    - `Phase4Defer::Install()` (Layer 1 structural fix: one
      inline hook on `id 19369` plus two call-site patches at
      `id 36016+0xdcb` and `id 19372+0x606`), gated by

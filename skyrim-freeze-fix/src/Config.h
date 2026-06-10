@@ -30,10 +30,18 @@ namespace WorkerSpinLockFix::Config {
         // If the cycle has self-resolved during the window the breaker
         // stands down; otherwise the lock is force-released.
         //
-        // A short window is fine because a true deadlock is observed
-        // thousands of times per millisecond, while a transient near-
-        // cycle resolves itself in microseconds.
-        std::uint32_t confirmation_window_ms{ 2 };
+        // MUST stay LONGER than WaitGraph's kEdgeStaleMs (50 ms). Since
+        // the spin-retry hook (AcquireHook) publishes self-expiring wait
+        // edges that a genuinely-stuck thread refreshes every backoff
+        // iteration, sleeping past the staleness window guarantees that
+        // any participant which STOPPED spinning during confirmation
+        // (because it acquired the lock, or because the "cycle" was a
+        // phantom built from a lingering stale edge) has let its edge
+        // expire -- so VerifyCycleStillPresent rejects it and no spurious
+        // break fires. A real deadlock keeps every edge fresh and breaks
+        // ~120 ms after detection, which is imperceptible next to the
+        // permanent freeze it replaces.
+        std::uint32_t confirmation_window_ms{ 120 };
 
         // If true, log every distinct cycle signature first observation
         // and every confirmation crossing. Recommended on so any break
