@@ -54,52 +54,47 @@ namespace WorkerSpinLockFix::Config {
                 tbl["log"]["stats_interval_s"].value_or<std::int64_t>(
                     g_settings.stats_interval_s));
 
-            g_settings.acquire_hook_enabled =
-                tbl["acquire_hook"]["enabled"].value_or(g_settings.acquire_hook_enabled);
-
-            g_settings.break_enabled =
-                tbl["breaker"]["break_enabled"].value_or(g_settings.break_enabled);
-            g_settings.confirmation_window_ms = static_cast<std::uint32_t>(
-                tbl["breaker"]["confirmation_window_ms"].value_or<std::int64_t>(
-                    g_settings.confirmation_window_ms));
-            g_settings.log_cycle_events =
-                tbl["breaker"]["log_cycle_events"].value_or(g_settings.log_cycle_events);
-
             g_settings.phase4_defer_enabled =
                 tbl["phase4_defer"]["enabled"].value_or(g_settings.phase4_defer_enabled);
             g_settings.phase4_defer_diagnostic_logging =
                 tbl["phase4_defer"]["diagnostic_logging"].value_or(
                     g_settings.phase4_defer_diagnostic_logging);
 
-            g_settings.reaper_enabled =
-                tbl["reaper"]["enabled"].value_or(g_settings.reaper_enabled);
-            g_settings.reaper_interval_ms = static_cast<std::uint32_t>(
-                tbl["reaper"]["interval_ms"].value_or<std::int64_t>(
-                    g_settings.reaper_interval_ms));
-
-            g_settings.test_mode_enabled =
-                tbl["test_mode"]["enabled"].value_or(g_settings.test_mode_enabled);
+            g_settings.jwb_enabled =
+                tbl["job_wait_breaker"]["enabled"].value_or(g_settings.jwb_enabled);
+            g_settings.jwb_detect_only =
+                tbl["job_wait_breaker"]["detect_only"].value_or(g_settings.jwb_detect_only);
+            g_settings.jwb_dwell_threshold_ms = static_cast<std::uint32_t>(
+                tbl["job_wait_breaker"]["dwell_threshold_ms"].value_or<std::int64_t>(
+                    g_settings.jwb_dwell_threshold_ms));
+            g_settings.jwb_poll_interval_ms = static_cast<std::uint32_t>(
+                tbl["job_wait_breaker"]["poll_interval_ms"].value_or<std::int64_t>(
+                    g_settings.jwb_poll_interval_ms));
+            g_settings.jwb_recheck_window_ms = static_cast<std::uint32_t>(
+                tbl["job_wait_breaker"]["recheck_window_ms"].value_or<std::int64_t>(
+                    g_settings.jwb_recheck_window_ms));
+            g_settings.jwb_diagnostic_logging =
+                tbl["job_wait_breaker"]["diagnostic_logging"].value_or(
+                    g_settings.jwb_diagnostic_logging);
 
             logs::info(
                 "Config loaded from {}: enabled={}, stats_interval_s={}, "
-                "acquire_hook_enabled={}, break_enabled={}, "
-                "confirmation_window_ms={}, log_cycle_events={}, "
                 "phase4_defer_enabled={}, "
                 "phase4_defer_diagnostic_logging={}, "
-                "reaper_enabled={}, reaper_interval_ms={}, "
-                "test_mode_enabled={}",
+                "jwb_enabled={}, jwb_detect_only={}, "
+                "jwb_dwell_threshold_ms={}, jwb_poll_interval_ms={}, "
+                "jwb_recheck_window_ms={}, jwb_diagnostic_logging={}",
                 path.string(),
                 g_settings.enabled,
                 g_settings.stats_interval_s,
-                g_settings.acquire_hook_enabled,
-                g_settings.break_enabled,
-                g_settings.confirmation_window_ms,
-                g_settings.log_cycle_events,
                 g_settings.phase4_defer_enabled,
                 g_settings.phase4_defer_diagnostic_logging,
-                g_settings.reaper_enabled,
-                g_settings.reaper_interval_ms,
-                g_settings.test_mode_enabled);
+                g_settings.jwb_enabled,
+                g_settings.jwb_detect_only,
+                g_settings.jwb_dwell_threshold_ms,
+                g_settings.jwb_poll_interval_ms,
+                g_settings.jwb_recheck_window_ms,
+                g_settings.jwb_diagnostic_logging);
         }
         catch (const toml::parse_error& e) {
             logs::warn("Config parse error at {}: {} - using built-in defaults.",

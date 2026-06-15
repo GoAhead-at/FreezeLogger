@@ -1,8 +1,8 @@
 cmake_minimum_required(VERSION 3.26)
 
 project(WorkerSpinLockFix
-    VERSION       2.2.0
-    DESCRIPTION   "SKSE plugin that breaks an AB-BA spinlock inversion in the engine's worker dispatcher. v2.2.0 adds Anniversary Edition support: the plugin now installs on Skyrim SE 1.5.97 AND AE 1.6.x (VR still refused). Every cross-version target was re-derived by static analysis of the unpacked AE 1.6.1170 binary -- NOT by byte signature, which does not survive AE's recompile. AE counterparts were pinned structurally and verified by disassembly: BSSpinLock::Acquire SE id 12210 -> AE id 13663 (identical +0x8a spin-retry offset and self-in-RDI/tid-in-EBP register contract); the LockA acquirer SE id 19369 -> AE id 19796 (unique recursive static-lock holder, identical 6-arg bool prologue, inlines its LockA acquire on AE); AddToTempChangeList SE id 40333 -> AE id 41343 and RemoveFromTempChangeList SE id 40334 -> AE id 41344 (pinned by the unique 'static spinlock guarding a bit-9 actor-flag toggle' fingerprint); the cycle hub SE id 36016 -> AE id 36991 (call->Remove at +0xdcb -> +0xf6e) and the add-wrapper SE id 19372 -> AE id 19799 (call->Add at +0x606 -> +0x634), both found via the call graph. LockA SE 0x2eff8e0 -> AE 0x31376d8, LockB SE 0x2f3b8e8 -> AE 0x319c2a8; the Actor flags field shifted +0xe0 -> +0xe8 (the Actor struct grew 8 bytes). All ids are resolved through REL::RelocationID{se,ae} pairs and all RVAs / call-site offsets / struct offsets are runtime-selected, so the same DLL runs on both editions; Phase4Defer's VerifyCallSite() remains fail-safe (a wrong call-site offset aborts the patch cleanly rather than corrupting code). v2.1.0 moves the runtime detector OFF the entry point of BSSpinLock::Acquire (id 12210): instead of an inline hook that every acquire across ~300 engine threads paid a detour for, it plants a safetyhook mid-hook at +0x8a, the retry point inside the engine's OUTER backoff spin loop. Only a thread that has already exhausted the inner pause spin -- the genuinely-stuck population -- reaches it, so the ~99.99% of acquires that never seriously contend (and all recursive re-entries) now run fully native with zero added per-acquire cost. This removes the hot-path overhead that stacked badly under framerate-amplifying mods (e.g. PureDark's upscaler). Because a mid-hook has no clean 'stopped waiting' callback, wait-graph edges are now SELF-EXPIRING (timestamp-refreshed each backoff iteration, honoured only within a 50 ms staleness window); the breaker's confirmation_window_ms is raised to 120 ms (> the staleness window) so any edge that stops refreshing during confirmation provably expires before a force-release can fire, preserving the no-spurious-break guarantee the old exact EnterSlow/ExitSlow bracket gave. v2.0 adds a structural fix on top of the v1.0 runtime breaker: three inline hooks on the LockA acquirer (id 19369) and the two LockB acquirers (id 40333 / id 40334) defer LockB acquires when LockA is held by the current thread, so the AB-BA cycle simply cannot form. v2.0.1 fixes a regression in scripted-animation activators (skyshards being the most visible case): v2.0.0's wrap on id 19369 was declared void and silently dropped its bool return value, so callers consistently saw 'failed' and skipped their downstream work. v2.0.1's wrap is bool-returning and propagates the original's return via unsafe_call<bool>. As defensive scaffolding, v2.0.1 also splits the deferred operation so the kInTempChangeList bit toggle (bit 9 of [actor+0xe0]) runs synchronously in the gate (single atomic fetch_or / fetch_and) while only the LockB-protected bucket-array update stays deferred. v2.0.1 also rebases the LockB-acquirer gates from function-wraps onto two surgical Trampoline::write_call<5> patches at id 36016+0xdcb (id 40334) and id 19372+0x606 (id 40333), the only call sites in the binary that reach the LockB acquirers while LockA is held; the function entries stay pristine, so other mods that hook id 40333 / id 40334 continue to work. v2.0.3 redesigns the optional stale-owner reaper so it consumes a snapshot of the WaitGraph populated by the AcquireHook slow path instead of suspending engine threads via SuspendThread + GetThreadContext + Toolhelp32 enumeration; the runtime path no longer suspends any engine thread for any reason. The v1.0 runtime breaker (surgical hook on BSSpinLock::Acquire id 12210, per-thread wait-for graph, time-based confirmation flow, force-release via InterlockedCompareExchange) is retained as defence-in-depth."
+    VERSION       2.3.0
+    DESCRIPTION   "SKSE plugin that fixes two distinct Skyrim hard-freeze classes; installs on Skyrim SE 1.5.97 and AE 1.6.x (VR refused). LAYER 1 -- Phase4Defer (the AB-BA spinlock prevention): an inline wrap on the LockA acquirer (SE id 19369 / AE id 19796) plus two surgical Trampoline::write_call<5> patches at the cycle-hub call sites (SE id 36016+0xdcb -> id 40334, SE id 19372+0x606 -> id 40333; AE id 36991+0xf6e, id 19799+0x634) defer LockB acquires while the current thread holds LockA, so the engine's AB-BA worker-dispatcher inversion structurally cannot form. All ids resolve through REL::RelocationID{se,ae} pairs and all call-site / struct offsets are runtime-selected, so the same DLL runs on both editions; VerifyCallSite() is fail-safe (a wrong offset aborts the patch cleanly rather than corrupting code). LAYER 2 (new in v2.3.0) -- JobWaitBreaker (the WaitForJobTask lost-wakeup recovery): the second, unrelated freeze class documented in case-study 27/28, where Main::Update parks in WaitForJobTask on a manual-reset job-completion event that a producer tore down WITHOUT signalling, leaving main asleep forever with no producer alive. An inline wrap on WaitForJobTask (located by a version-independent .text body signature, with the Singleton-B job-pool slot derived from its rip-relative load) marks when main is parked and on which job index; a watchdog thread detects the lost-wakeup signature (main parked past a dwell threshold on a job slot that has been torn down to null) and, in active mode, delivers the missing signal via SetEvent on the captured wait handle so main resumes -- the job is already gone, so this is equivalent to the signal that was lost. Ships detect-only by default (logs the signature, alters nothing) until the release path is field-validated. v2.3.0 removes the v1.0 runtime breaker (AcquireHook + WaitGraph + Breaker), the stale-owner reaper, and the synthetic test harness: Phase4Defer fully prevents the AB-BA cycle (validated in the field with cycles_observed=0), so the runtime breaker and its reaper backstop were redundant and have been retired to shrink the plugin's footprint to two focused, independent fixes."
     LANGUAGES     CXX
 )
 
@@ -21,12 +21,9 @@ set(SOURCES
     src/Logger.cpp
     src/Hooks.cpp
     src/Stats.cpp
-    src/AcquireHook.cpp
-    src/WaitGraph.cpp
-    src/Breaker.cpp
     src/Phase4Defer.cpp
-    src/Reaper.cpp
-    src/TestMode.cpp
+    src/SkyrimAnchors.cpp
+    src/JobWaitBreaker.cpp
 )
 
 set(HEADERS
@@ -35,12 +32,9 @@ set(HEADERS
     src/Logger.h
     src/Hooks.h
     src/Stats.h
-    src/AcquireHook.h
-    src/WaitGraph.h
-    src/Breaker.h
     src/Phase4Defer.h
-    src/Reaper.h
-    src/TestMode.h
+    src/SkyrimAnchors.h
+    src/JobWaitBreaker.h
 )
 
 add_commonlibsse_plugin(${PROJECT_NAME}

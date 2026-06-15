@@ -7,47 +7,6 @@ namespace WorkerSpinLockFix::Config {
 
         std::uint32_t stats_interval_s{ 60 };
 
-        // ---- AcquireHook + Breaker -----------------------------------------
-
-        // Emergency kill-switch for the entry-point hook on
-        // BSSpinLock::Acquire. If false, the hook is NOT installed and
-        // the plugin runs reaper-only. Use this if any AcquireHook-class
-        // regression (hot-path overhead, prologue collision with another
-        // mod, etc.) makes the game unplayable, without rebuilding or
-        // removing the DLL.
-        bool acquire_hook_enabled{ true };
-
-        // If false, Breaker logs cycle observations but never force-
-        // releases a lock. With the surgical filter (LockA/LockB only)
-        // and a short confirmation window, breaks are rare and only
-        // occur on the documented engine AB-BA race.
-        bool break_enabled{ true };
-
-        // Wall-clock duration a cycle topology must remain observable
-        // before the breaker will force-release a lock. The first
-        // detector of a signature claims the confirmation flow, sleeps
-        // this long, then re-runs WaitGraph::VerifyCycleStillPresent.
-        // If the cycle has self-resolved during the window the breaker
-        // stands down; otherwise the lock is force-released.
-        //
-        // MUST stay LONGER than WaitGraph's kEdgeStaleMs (50 ms). Since
-        // the spin-retry hook (AcquireHook) publishes self-expiring wait
-        // edges that a genuinely-stuck thread refreshes every backoff
-        // iteration, sleeping past the staleness window guarantees that
-        // any participant which STOPPED spinning during confirmation
-        // (because it acquired the lock, or because the "cycle" was a
-        // phantom built from a lingering stale edge) has let its edge
-        // expire -- so VerifyCycleStillPresent rejects it and no spurious
-        // break fires. A real deadlock keeps every edge fresh and breaks
-        // ~120 ms after detection, which is imperceptible next to the
-        // permanent freeze it replaces.
-        std::uint32_t confirmation_window_ms{ 120 };
-
-        // If true, log every distinct cycle signature first observation
-        // and every confirmation crossing. Recommended on so any break
-        // that actually fires can be audited from the log.
-        bool log_cycle_events{ true };
-
         // ---- Phase 4 structural defer (Phase4Defer.cpp) --------------------
 
         // Phase 4 layered structural fix on top of the v1.0.0 runtime
@@ -84,45 +43,37 @@ namespace WorkerSpinLockFix::Config {
         // flowed through them.
         bool phase4_defer_diagnostic_logging{ false };
 
-        // ---- Backstop: stale-owner reaper ----------------------------------
-
-        // The reaper runs as a safety net for cases the entry-point
-        // hook misses (threads that died holding a lock, indirect calls
-        // our hook never sees, etc.). It is the only part of the plugin
-        // that suspends engine threads + makes Psapi calls + allocates,
-        // so it is also the only part that can plausibly cause load-time
-        // stalls on heavy modlists. Disabled by default; the surgical
-        // AcquireHook + Breaker pipeline is sufficient for the
-        // documented engine bug.
-        bool reaper_enabled{ false };
-
-        // Reaper poll interval. Stale-owner deadlocks last forever, so
-        // long latency between scans is acceptable; the steady-state
-        // cost of a full thread enumeration + per-thread
-        // SuspendThread/GetThreadContext at this interval is negligible.
-        std::uint32_t reaper_interval_ms{ 30000 };
-
-        // ---- Test mode (synthetic AB-BA validation) ------------------------
-
-        // If true, after kDataLoaded the plugin spawns two threads that
-        // deliberately AB-BA two heap-allocated test BSSpinLocks routed
-        // through the real BSSpinLock::Acquire (id 12210) so they go
-        // through the surgical hook. Without the breaker the threads
-        // would deadlock forever; with the breaker the time-based
-        // confirmation flow detects the cycle, sleeps the confirmation
-        // window, verifies the cycle is still present, force-releases
-        // one test lock, and both test threads complete.
+        // ---- JobWaitBreaker (WaitForJobTask lost-wakeup recovery) ----------
         //
-        // The test does NOT touch the engine's BSSpinLocks. It allocates
-        // its own pair of BSSpinLock objects and registers them with
-        // AcquireHook::AddTestLocks. The breaker writes only into those
-        // two pointers; engine state is never modified.
-        //
-        // Default OFF. Enable manually in the TOML to validate the
-        // breaker, then disable again before regular play. The test
-        // produces a clear [TEST] SUCCESS or [TEST] FAILURE line in the
-        // log within ~5 seconds of kDataLoaded.
-        bool test_mode_enabled{ false };
+        // Recovers the engine from the Skyrim main-thread WaitForJobTask
+        // lost-wakeup hang (case-study 27/28): main parks on a job
+        // completion event that a producer tore down without signalling,
+        // so the game freezes. See JobWaitBreaker.h for the mechanism.
+
+        // Master switch for the module.
+        bool jwb_enabled{ true };
+
+        // Detect-only (default): when the lost-wakeup signature is seen,
+        // log it but do NOT alter engine behaviour. Set to false to
+        // actually release main (SetEvent on the parked job handle).
+        // Ships true until the release path is field-validated.
+        bool jwb_detect_only{ true };
+
+        // How long main must be parked in WaitForJobTask before the
+        // module considers it stuck. Far above any legitimate job-wait
+        // during play, well below the FreezeLogger 15 s watchdog.
+        std::uint32_t jwb_dwell_threshold_ms{ 3000 };
+
+        // Watchdog poll cadence.
+        std::uint32_t jwb_poll_interval_ms{ 1000 };
+
+        // Confirmation re-check window: after the dwell + teardown gate
+        // first matches, the watchdog waits this long and re-verifies
+        // before acting, so a legitimate late completion is never raced.
+        std::uint32_t jwb_recheck_window_ms{ 250 };
+
+        // Verbose per-decision logging for the watchdog.
+        bool jwb_diagnostic_logging{ false };
     };
 
     void Init();

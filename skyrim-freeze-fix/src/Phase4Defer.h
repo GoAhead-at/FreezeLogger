@@ -2,11 +2,16 @@
 
 namespace WorkerSpinLockFix::Phase4Defer {
 
-    // Phase 4 structural fix layered on top of the v1.0.0 runtime
-    // breaker. While AcquireHook + WaitGraph + Breaker observe the
-    // AB-BA cycle and force-release a lock when one fires, this
-    // module STOPS the cycle from forming in the first place by
-    // breaking its LA->LB direction.
+    // The structural fix for the engine's AB-BA BSSpinLock inversion.
+    // It STOPS the cycle from forming in the first place by breaking
+    // its LA->LB direction.
+    //
+    // (Historically this was Layer 1 on top of a v1.0 runtime breaker
+    // that detected and force-released live cycles. As of v2.3.0 the
+    // runtime breaker and its reaper backstop have been removed: field
+    // telemetry showed the structural fix prevents every cycle
+    // (cycles_observed=0), so the breaker never fired and was redundant.
+    // This module is now the sole AB-BA fix.)
     //
     // Background
     // ----------
@@ -54,18 +59,6 @@ namespace WorkerSpinLockFix::Phase4Defer {
     // The LB->LA direction (id 40285 / id 36614 / id 38413 ->
     // id 19369) is left entirely alone. Once the LA->LB edge is
     // broken, the AB-BA cycle simply cannot form.
-    //
-    // Layering with the v1.0.0 runtime breaker
-    // ----------------------------------------
-    // This module is additive. The runtime breaker (AcquireHook +
-    // WaitGraph + Breaker + Reaper) remains installed and active.
-    // If for any reason the structural fix here does not break a
-    // particular cycle (a path we missed, an edge case, an indirect
-    // call we didn't decode), the runtime breaker still catches it
-    // and force-releases. The two layers do not interfere: this
-    // module operates above the BSSpinLock layer (it never enters
-    // BSSpinLock::Acquire while LockA is held) so the
-    // entry-point hook on id 12210 sees no interaction.
     //
     // Returns true when all three hooks installed cleanly. Returns
     // false on any partial failure; on partial failure ALL hooks

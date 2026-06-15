@@ -1,7 +1,13 @@
 # 28. `JobWaitBreaker` — releasing the `WaitForJobTask` lost-wakeup hang
 
 **Date:** 2026-06-15
-**Status:** Design proposal (not yet implemented).
+**Status:** Implemented in `WorkerSpinLockFix` v2.3.0 (ships
+**detect-only** by default; the `SetEvent` release path is gated behind
+`[job_wait_breaker] detect_only = false` pending field validation). The
+v1.0 runtime breaker, the stale-owner reaper, and the synthetic test
+harness were removed in the same release. See
+`../../skyrim-freeze-fix/src/JobWaitBreaker.cpp` and
+`../../skyrim-freeze-fix/docs/design.md` §3.7.
 **Targets:** The Skyrim main-thread `WaitForJobTask` hang documented in
 case-study 27 — the *second* hard-freeze class, distinct from the AB-BA
 `BSSpinLock` inversion that `WorkerSpinLockFix` already prevents.

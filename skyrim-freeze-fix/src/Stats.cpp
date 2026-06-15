@@ -6,29 +6,14 @@ namespace WorkerSpinLockFix::Stats {
 
     namespace {
 
-        // AcquireHook (slow path only; see Stats.h)
-        std::atomic<std::uint64_t> g_acq_slow{ 0 };
-
-        // Breaker
-        std::atomic<std::uint64_t> g_cycle_observed{ 0 };
-        std::atomic<std::uint64_t> g_cycle_confirmed{ 0 };
-        std::atomic<std::uint64_t> g_break_suppressed{ 0 };
-        std::atomic<std::uint64_t> g_break_done{ 0 };
-        std::atomic<std::uint64_t> g_break_raced{ 0 };
-
         // Phase 4 structural defer
         std::atomic<std::uint64_t> g_p4_queued{ 0 };
         std::atomic<std::uint64_t> g_p4_drained{ 0 };
         std::atomic<std::uint64_t> g_p4_passthrough{ 0 };
 
-        // Reaper backstop
-        std::atomic<std::uint64_t> g_reaper_scans{ 0 };
-        std::atomic<std::uint64_t> g_stale_reaped{ 0 };
-        std::atomic<std::uint64_t> g_force_race{ 0 };
-        std::atomic<std::uint64_t> g_last_threads{ 0 };
-        std::atomic<std::uint64_t> g_last_spinners{ 0 };
-        std::atomic<std::uint64_t> g_last_candidates{ 0 };
-        std::atomic<std::uint64_t> g_last_edges{ 0 };
+        // JobWaitBreaker
+        std::atomic<std::uint64_t> g_jw_stuck{ 0 };
+        std::atomic<std::uint64_t> g_jw_released{ 0 };
 
         std::thread       g_dump_thread;
         std::atomic<bool> g_running{ false };
@@ -36,27 +21,13 @@ namespace WorkerSpinLockFix::Stats {
 
         void DumpOnce() {
             logs::info(
-                "stats: acq_slow={} cycles_observed={} cycles_confirmed={} "
-                "breaks_done={} breaks_raced={} breaks_suppressed={} | "
-                "phase4: queued={} drained={} passthrough={} | "
-                "reaper: scans={} threads={} spinners={} candidates={} "
-                "edges={} stale_reaped={} races={}",
-                g_acq_slow.load(std::memory_order_relaxed),
-                g_cycle_observed.load(std::memory_order_relaxed),
-                g_cycle_confirmed.load(std::memory_order_relaxed),
-                g_break_done.load(std::memory_order_relaxed),
-                g_break_raced.load(std::memory_order_relaxed),
-                g_break_suppressed.load(std::memory_order_relaxed),
+                "stats: phase4: queued={} drained={} passthrough={} | "
+                "job_wait: stuck={} released={}",
                 g_p4_queued.load(std::memory_order_relaxed),
                 g_p4_drained.load(std::memory_order_relaxed),
                 g_p4_passthrough.load(std::memory_order_relaxed),
-                g_reaper_scans.load(std::memory_order_relaxed),
-                g_last_threads.load(std::memory_order_relaxed),
-                g_last_spinners.load(std::memory_order_relaxed),
-                g_last_candidates.load(std::memory_order_relaxed),
-                g_last_edges.load(std::memory_order_relaxed),
-                g_stale_reaped.load(std::memory_order_relaxed),
-                g_force_race.load(std::memory_order_relaxed));
+                g_jw_stuck.load(std::memory_order_relaxed),
+                g_jw_released.load(std::memory_order_relaxed));
         }
 
         void DumpLoop(std::chrono::seconds interval) {
@@ -71,26 +42,6 @@ namespace WorkerSpinLockFix::Stats {
 
     } // namespace
 
-    void OnAcquireSlow() noexcept {
-        g_acq_slow.fetch_add(1, std::memory_order_relaxed);
-    }
-
-    void OnCycleObserved() noexcept {
-        g_cycle_observed.fetch_add(1, std::memory_order_relaxed);
-    }
-    void OnCycleConfirmed() noexcept {
-        g_cycle_confirmed.fetch_add(1, std::memory_order_relaxed);
-    }
-    void OnBreakSuppressed() noexcept {
-        g_break_suppressed.fetch_add(1, std::memory_order_relaxed);
-    }
-    void OnBreakDone() noexcept {
-        g_break_done.fetch_add(1, std::memory_order_relaxed);
-    }
-    void OnBreakRaced() noexcept {
-        g_break_raced.fetch_add(1, std::memory_order_relaxed);
-    }
-
     void OnPhase4Queued() noexcept {
         g_p4_queued.fetch_add(1, std::memory_order_relaxed);
     }
@@ -101,24 +52,11 @@ namespace WorkerSpinLockFix::Stats {
         g_p4_passthrough.fetch_add(1, std::memory_order_relaxed);
     }
 
-    void OnReaperScan(
-        std::size_t threads,
-        std::size_t spinners,
-        std::size_t candidates,
-        std::size_t stable_edges) noexcept
-    {
-        g_reaper_scans.fetch_add(1, std::memory_order_relaxed);
-        g_last_threads.store(static_cast<std::uint64_t>(threads), std::memory_order_relaxed);
-        g_last_spinners.store(static_cast<std::uint64_t>(spinners), std::memory_order_relaxed);
-        g_last_candidates.store(static_cast<std::uint64_t>(candidates), std::memory_order_relaxed);
-        g_last_edges.store(static_cast<std::uint64_t>(stable_edges), std::memory_order_relaxed);
+    void OnJobWaitStuck() noexcept {
+        g_jw_stuck.fetch_add(1, std::memory_order_relaxed);
     }
-
-    void OnStaleReaped() noexcept {
-        g_stale_reaped.fetch_add(1, std::memory_order_relaxed);
-    }
-    void OnForceRace() noexcept {
-        g_force_race.fetch_add(1, std::memory_order_relaxed);
+    void OnJobWaitReleased() noexcept {
+        g_jw_released.fetch_add(1, std::memory_order_relaxed);
     }
 
     void StartPeriodicDump() {

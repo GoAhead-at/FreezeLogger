@@ -4,7 +4,6 @@
 #include "Hooks.h"
 #include "Logger.h"
 #include "Stats.h"
-#include "TestMode.h"
 
 namespace {
 
@@ -68,13 +67,6 @@ namespace {
             break;
         case SKSE::MessagingInterface::kDataLoaded:
             logs::info("Data files loaded; plugin remains active.");
-            if (WorkerSpinLockFix::Config::Get().test_mode_enabled) {
-                logs::warn(
-                    "[TEST] test_mode is ENABLED in config. Launching "
-                    "synthetic AB-BA validation harness. Disable "
-                    "test_mode in WorkerSpinLockFix.toml for normal play.");
-                WorkerSpinLockFix::TestMode::Run();
-            }
             break;
         default:
             break;
@@ -109,12 +101,11 @@ extern "C" [[maybe_unused]] __declspec(dllexport) bool SKSEAPI SKSEPlugin_Load(
 
     // SKSE trampoline pool. Sized for Phase4Defer's two call-site
     // patches (14 bytes each via Trampoline::write_call<5>) plus
-    // generous headroom for any future patches. Allocating it here
-    // -- rather than inside Phase4Defer::Install() -- keeps the
-    // trampoline owned by the plugin's load-time prologue and avoids
-    // re-allocating across hook reinstalls. AcquireHook continues to
-    // use safetyhook (which manages its own per-hook trampoline) and
-    // does not consume from this pool.
+    // generous headroom. Allocating it here -- rather than inside
+    // Phase4Defer::Install() -- keeps the trampoline owned by the
+    // plugin's load-time prologue. The JobWaitBreaker uses safetyhook
+    // (which manages its own per-hook trampoline) and does not consume
+    // from this pool.
     SKSE::AllocTrampoline(64);
 
     if (!WorkerSpinLockFix::Hooks::Install()) {
@@ -129,8 +120,8 @@ extern "C" [[maybe_unused]] __declspec(dllexport) bool SKSEAPI SKSEPlugin_Load(
     }
 
     logs::info(
-        "WorkerSpinLockFix loaded successfully. Surgical AcquireHook "
-        "(LockA/LockB only) + WaitGraph + Breaker + Reaper backstop "
-        "active.");
+        "WorkerSpinLockFix loaded successfully. Phase4Defer (AB-BA "
+        "spinlock prevention) + JobWaitBreaker (WaitForJobTask "
+        "lost-wakeup recovery) active.");
     return true;
 }

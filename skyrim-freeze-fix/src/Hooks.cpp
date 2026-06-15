@@ -1,101 +1,56 @@
 #include "PCH.h"
 #include "Hooks.h"
 
-#include "AcquireHook.h"
-#include "Breaker.h"
 #include "Config.h"
+#include "JobWaitBreaker.h"
 #include "Phase4Defer.h"
-#include "Reaper.h"
-#include "WaitGraph.h"
+#include "SkyrimAnchors.h"
 
 namespace WorkerSpinLockFix::Hooks {
 
     bool Install() {
         const auto& cfg = Config::Get();
 
-        WaitGraph::Init();
-        Breaker::Init();
+        // Resolve the WaitForJobTask / Singleton-B anchors up-front (version-
+        // independent signature scan). The JobWaitBreaker gates on this.
+        SkyrimAnchors::Init();
 
-        // Resolve the spin-retry address and the LockA / LockB pointers
-        // up-front. AcquireHook owns these; the v2.0.3 Reaper redesign
-        // no longer reads the spin-retry RVA (it consumes WaitGraph
-        // edges directly), but we still resolve it unconditionally so
-        // that turning AcquireHook on later via config has zero
-        // resolution cost.
-        AcquireHook::ResolveSpinRetryAddress();
-        AcquireHook::ResolveLockPointers();
-
-        bool acquire_hook_active = false;
-        if (cfg.acquire_hook_enabled) {
-            if (AcquireHook::Install()) {
-                acquire_hook_active = true;
-            } else {
-                logs::critical(
-                    "AcquireHook installation FAILED. Cycle detection is "
-                    "NOT active. The reaper backstop, if enabled, will "
-                    "see no edges to act on (the WaitGraph is only "
-                    "populated by the AcquireHook slow path).");
-            }
-        } else {
-            logs::warn(
-                "AcquireHook disabled by config "
-                "(acquire_hook.enabled = false). Plugin runs reaper-only "
-                "if [reaper] is enabled, but the reaper depends on the "
-                "WaitGraph populated by AcquireHook -- with both off "
-                "the plugin is effectively idle.");
-        }
-
+        // ---- Layer 1: structural AB-BA prevention (Phase4Defer) ----------
         bool phase4_active = false;
         if (cfg.phase4_defer_enabled) {
             if (Phase4Defer::Install()) {
                 phase4_active = true;
             } else {
                 logs::warn(
-                    "[Phase4Defer] structural fix did NOT install. "
-                    "Falling back to runtime-breaker-only mode "
-                    "(v1.0.0 behaviour). The runtime breaker is "
-                    "sufficient for the documented engine bug; the "
-                    "structural fix is a leaner mechanism but not a "
-                    "prerequisite.");
+                    "[Phase4Defer] structural fix did NOT install. The AB-BA "
+                    "spinlock prevention layer is inactive this session; the "
+                    "engine runs unmodified for that bug.");
             }
         } else {
             logs::info(
                 "[Phase4Defer] structural fix disabled by config "
-                "(phase4_defer.enabled = false). Plugin runs in "
-                "v1.0.0 runtime-breaker-only mode.");
+                "(phase4_defer.enabled = false).");
         }
 
-        if (cfg.reaper_enabled) {
-            if (!Reaper::Install()) {
-                logs::warn(
-                    "Reaper backstop did not start. AcquireHook is the "
-                    "only active mechanism.");
+        // ---- Layer 2: WaitForJobTask lost-wakeup recovery ---------------
+        bool jwb_active = false;
+        if (cfg.jwb_enabled) {
+            if (JobWaitBreaker::Install()) {
+                jwb_active = true;
             }
         } else {
-            logs::info("Reaper backstop disabled by config.");
+            logs::info(
+                "[JobWaitBreaker] disabled by config "
+                "(job_wait_breaker.enabled = false).");
         }
 
         logs::info(
-            "WorkerSpinLockFix armed. Surgical mode "
-            "(acquire_hook_active={}, break_enabled={}, "
-            "confirmation_window_ms={}, phase4_active={}, "
-            "reaper_enabled={}, reaper_interval_ms={}, "
-            "test_mode_enabled={}). The AcquireHook filters to "
-            "LockA/LockB; all other BSSpinLocks fast-path bypass "
-            "through the lock-free trampoline. When phase4_active "
-            "is true the structural fix breaks the AB-BA cycle's "
-            "LA->LB direction at the two cycle-hub call sites "
-            "(id 36016+0xdcb -> id 40334 and id 19372+0x606 -> "
-            "id 40333), so the runtime breaker becomes a safety "
-            "net rather than the primary mechanism.",
-            acquire_hook_active,
-            cfg.break_enabled,
-            cfg.confirmation_window_ms,
-            phase4_active,
-            cfg.reaper_enabled,
-            cfg.reaper_interval_ms,
-            cfg.test_mode_enabled);
-        return true;
+            "WorkerSpinLockFix armed. phase4_active={} (AB-BA spinlock "
+            "prevention), job_wait_breaker_active={} (WaitForJobTask "
+            "lost-wakeup recovery, detect_only={}).",
+            phase4_active, jwb_active, cfg.jwb_detect_only);
+
+        return phase4_active || jwb_active;
     }
 
 }

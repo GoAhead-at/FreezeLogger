@@ -1,13 +1,26 @@
 # WorkerSpinLockFix - design
 
 This document describes the architecture of the `WorkerSpinLockFix`
-SKSE plugin **as of v2.0.0**: what each module does, why it is
-shaped that way, and the invariants that hold across the whole
-system.
+SKSE plugin: what each module does, why it is shaped that way, and the
+invariants that hold across the whole system.
 
-The plugin layers two independent fixes for the same engine bug:
+> **v2.3.0 architecture change.** The plugin now ships **two
+> independent fixes for two *different* freeze classes**, and the
+> earlier v1.0 runtime breaker stack has been removed. Sections
+> §2.2 (runtime breaker), §3.2-§3.4 (`AcquireHook` / `WaitGraph` /
+> `Breaker`), §3.5 (`Reaper`), and §3.6 (`TestMode`) below describe
+> code that **no longer exists in the plugin**; they are retained for
+> historical reference only. The reason for the removal: field
+> telemetry showed `Phase4Defer` prevents the AB-BA cycle outright
+> (`cycles_observed=0` across long sessions), so the runtime breaker
+> never fired and was pure redundancy. Its reaper backstop (only ever
+> useful for a *dead-owner* orphaned lock, a case that does not occur
+> for this live-thread AB-BA bug) and the synthetic test harness went
+> with it.
 
-1. **Layer 1 - Structural fix (`Phase4Defer`, v2.0).** One inline
+The plugin's two current layers:
+
+1. **Layer 1 - AB-BA spinlock prevention (`Phase4Defer`).** One inline
    hook on the LockA acquirer (`id 19369`) plus two surgical
    call-site patches inside the cycle hub (`id 36016+0xdcb` ->
    `id 40334`, `id 19372+0x606` -> `id 40333`) defer the LockB
@@ -15,17 +28,23 @@ The plugin layers two independent fixes for the same engine bug:
    The deferred calls drain on the same thread when LockA is
    released. The AB-BA cycle cannot form. The function entries
    of `id 40333` / `id 40334` are left pristine so other mods
-   that hook those functions cooperate with this plugin.
-2. **Layer 2 - Runtime breaker (`AcquireHook` + `WaitGraph` +
-   `Breaker`, v1.0; mid-hook since v2.1.0).** A surgical mid-hook at
-   `BSSpinLock::Acquire (id 12210) +0x8a` -- the retry point inside
-   the engine's backoff spin loop, reached only by genuinely-stuck
-   threads -- detects cycles that form anyway (cycle paths the
-   structural fix misses) and force-releases one lock so the spinning
-   thread proceeds. Uncontended acquires never reach the hook.
+   that hook those functions cooperate with this plugin. This is now
+   the sole fix for the AB-BA inversion (see §2.1, §3.1).
+2. **Layer 2 - WaitForJobTask lost-wakeup recovery (`JobWaitBreaker`,
+   new in v2.3.0).** A *separate* engine freeze class (case-study
+   27/28): `Main::Update` parks in `WaitForJobTask` on a manual-reset
+   job-completion event that a producer tore down without signalling,
+   so main sleeps forever. An inline wrap on `WaitForJobTask` (located
+   by a version-independent `.text` body signature, with the
+   Singleton-B job slot derived from its rip-relative load) tracks when
+   main is parked; a watchdog detects the lost-wakeup signature (parked
+   past a dwell threshold on a job slot torn down to null) and, in
+   active mode, delivers the missing signal via `SetEvent`. Ships
+   detect-only by default until field-validated. See §3.7 and
+   [`../../docs/case-study/28-jobwaitbreaker-design.md`](../../docs/case-study/28-jobwaitbreaker-design.md).
 
-Layer 1 is the primary fix. Layer 2 is defence-in-depth: with the
-structural fix active and healthy it should never fire.
+The two layers are fully independent: they target different bugs, hook
+different functions, and share no state.
 
 For the engine bug being fixed see
 [`../../docs/case-study/06-root-cause.md`](../../docs/case-study/06-root-cause.md).
@@ -549,6 +568,49 @@ drain, and the log emits `[TEST] FAILURE`.
 The harness exists primarily so future regressions in the breaker
 can be caught immediately on the first launch without waiting for a
 real engine cycle to fire (which is rare and timing-dependent).
+
+### 3.7. `SkyrimAnchors` + `JobWaitBreaker` (v2.3.0, current)
+
+The Layer 2 modules. They target the **second** freeze class -- the
+Skyrim main-thread `WaitForJobTask` lost-wakeup hang -- which is
+unrelated to the AB-BA spinlock bug Layer 1 prevents. Full design and
+evidence: [`../../docs/case-study/28-jobwaitbreaker-design.md`](../../docs/case-study/28-jobwaitbreaker-design.md).
+
+**`SkyrimAnchors`** resolves two engine anchors at load, version-
+independently (SE 1.5.97 / AE 1.6.x / VR), with no Address Library
+dependency: it scans the loaded module's `.text` for the 15-byte
+`WaitForJobTask` body signature and derives the Singleton-B job-pool
+slot from the `mov rax,[rip+disp]` prologue immediately above it.
+Ported from the FreezeLogger diagnostics plugin, where the same scan
+drives the Site-B freeze probe. If the signature is not found,
+`Available()` stays false and `JobWaitBreaker` does not arm.
+
+**`JobWaitBreaker`** has three pieces:
+
+1. **`WaitForJobTask` inline wrap.** On the main thread (pinned on
+   first call), the outermost entry records "in a job-wait since `T`,
+   on job index `N`", resets the captured handle, and bumps an episode
+   sequence; the matching exit clears the flag. A `thread_local` depth
+   counter keeps nested calls in one episode. The wrap returns the
+   original's value (declared `uintptr_t`, a safe superset).
+2. **Watchdog thread.** Polls at `poll_interval_ms`. When main has been
+   parked longer than `dwell_threshold_ms`, it reads the job slot
+   (`*(singleton) -> [+8] -> [idx*8]`, SEH-guarded). A `null` there
+   means the job was torn down after main parked -- the lost-wakeup
+   signature. It re-verifies after `recheck_window_ms` (same episode,
+   still parked, still torn down) before acting, so a legitimate late
+   completion is never raced. A long job that is *still in flight* (slot
+   populated) is left alone -- it is not a lost wakeup.
+3. **Release (active mode only).** `SetEvent` on the handle main is
+   parked on, captured by a tightly-filtered `WaitForSingleObjectEx`
+   wrap (installed only when `detect_only=false`). Because the gate
+   requires the job to already be gone, waking main is equivalent to
+   the signal that was lost.
+
+Defaults: `enabled=true`, `detect_only=true` (logs the signature,
+changes nothing) until the release path is field-validated. The module
+never suspends an engine thread or reads a thread context -- a
+deliberate contrast with the retired reaper (§3.5).
 
 ---
 
