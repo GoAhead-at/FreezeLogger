@@ -227,6 +227,31 @@ TEST_CASE("Step: focus regained after suppression allows next real stall to trip
     REQUIRE(s.in_freeze == true);
 }
 
+TEST_CASE("Step: suppressed unfocused stall escalates to a snapshot once the window hangs", "[watchdog][step][suppress]") {
+    State s{};
+    const auto t0 = std::uint64_t{100'000};
+
+    // Stall first observed while unfocused and not yet hung -> suppressed.
+    auto r0 = Step(s, t0, /*main=*/t0 - 7'000, /*render=*/t0 - 100,
+                   kThreshold, kCooldown, /*a_canTrip=*/false);
+    REQUIRE(r0.action == Action::SuppressedStall);
+    REQUIRE(s.suppressed_freeze == true);
+    REQUIRE(s.in_freeze == false);
+
+    // Still frozen 6 s later (neither heartbeat has advanced) and the window
+    // is now hung, so the caller passes a_canTrip=true -> escalate to a
+    // snapshot. By now both ages exceed the threshold, so this classifies as
+    // Both -- exactly the field log's "stalled=both".
+    const auto t1 = t0 + 6'000;
+    auto r1 = Step(s, t1, /*main=*/t0 - 7'000, /*render=*/t0 - 100,
+                   kThreshold, kCooldown, /*a_canTrip=*/true);
+    REQUIRE(r1.action == Action::EmitSnapshot);
+    REQUIRE(r1.stalled == StalledThread::Both);
+    REQUIRE(s.in_freeze == true);
+    REQUIRE(s.suppressed_freeze == false);
+    REQUIRE(s.last_snapshot_at_ms == t1);
+}
+
 TEST_CASE("Step: backwards-compatible default a_canTrip=true behaves as before", "[watchdog][step][suppress]") {
     State s{};
     const auto t0 = std::uint64_t{100'000};

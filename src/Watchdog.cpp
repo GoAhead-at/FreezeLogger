@@ -53,6 +53,38 @@ namespace FreezeLogger::Watchdog {
             return pid == ::GetCurrentProcessId();
         }
 
+        // Lazily-resolved, cached top-level window owned by this process.
+        std::atomic<HWND> g_mainWindow{ nullptr };
+
+        BOOL CALLBACK FindOurWindowProc(HWND a_hwnd, LPARAM a_lparam) {
+            DWORD pid = 0;
+            ::GetWindowThreadProcessId(a_hwnd, &pid);
+            if (pid != ::GetCurrentProcessId())    return TRUE;  // keep scanning
+            if (!::IsWindowVisible(a_hwnd))        return TRUE;
+            if (::GetWindow(a_hwnd, GW_OWNER))     return TRUE;   // top-level only
+            *reinterpret_cast<HWND*>(a_lparam) = a_hwnd;
+            return FALSE;                                         // found; stop
+        }
+
+        HWND MainWindow() noexcept {
+            HWND cached = g_mainWindow.load(std::memory_order_relaxed);
+            if (cached && ::IsWindow(cached)) return cached;
+            HWND found = nullptr;
+            ::EnumWindows(&FindOurWindowProc, reinterpret_cast<LPARAM>(&found));
+            if (found) g_mainWindow.store(found, std::memory_order_relaxed);
+            return found;
+        }
+
+        // A genuine hard freeze stops pumping the window message queue, so the
+        // OS marks the window "hung" (IsHungAppWindow == no message processed
+        // for ~5 s). An unfocused-idle Skyrim still pumps its message loop, so
+        // it is NOT hung. This is what lets us tell a real freeze that lost
+        // focus (capture it!) apart from a normal alt-tab idle (suppress it).
+        bool MainWindowIsHung() noexcept {
+            HWND w = MainWindow();
+            return w != nullptr && ::IsHungAppWindow(w) != FALSE;
+        }
+
         // Per-loop early-warning state. Logs ONCE when a stall crosses 50 %
         // of the threshold and ONCE more after it resolves. Independent of
         // the trip/snapshot machinery — purpose is to leave a paper trail
@@ -69,11 +101,16 @@ namespace FreezeLogger::Watchdog {
                                   std::uint64_t a_mainAge,
                                   std::uint64_t a_renderAge,
                                   std::uint32_t a_thresholdMs,
-                                  bool          a_fgOurs)
+                                  bool          a_canWarn)
         {
             const auto half = a_thresholdMs / 2;
             const auto worst = (a_mainAge > a_renderAge) ? a_mainAge : a_renderAge;
-            const bool stale = a_fgOurs && worst > half;
+            // Gate on a_canWarn (foreground OR window-hung) -- the same
+            // condition that lets a stall trip. This keeps the warning quiet
+            // during a normal unfocused idle, yet a real freeze that loses
+            // focus stays "armed" (the window is hung) so we never print a
+            // bogus "recovered" line just because focus moved.
+            const bool stale = a_canWarn && worst > half;
 
             if (stale && !a_ew.armed) {
                 a_ew.armed      = true;
@@ -81,16 +118,20 @@ namespace FreezeLogger::Watchdog {
                 a_ew.logged_age = worst;
                 logs::info(
                     "Watchdog: heartbeat stale (mainAge={}ms, renderAge={}ms, "
-                    "threshold={}ms). Still under threshold; will trip if it "
-                    "persists. (Logged early so a force-kill before threshold "
-                    "still leaves a record.)",
+                    "threshold={}ms); monitoring for a snapshot. (Logged early "
+                    "so a force-kill before the snapshot still leaves a "
+                    "record.)",
                     a_mainAge, a_renderAge, a_thresholdMs);
             } else if (!stale && a_ew.armed) {
+                // Track the largest age we saw, so the recovery line is honest
+                // even though we only re-evaluate once per check interval.
                 logs::info(
-                    "Watchdog: heartbeat recovered without tripping (peak age "
-                    "~{}ms before recovery).",
-                    a_ew.logged_age);
+                    "Watchdog: heartbeat recovered (peak age ~{}ms before "
+                    "recovery).",
+                    (worst > a_ew.logged_age) ? worst : a_ew.logged_age);
                 a_ew = {};
+            } else if (stale && worst > a_ew.logged_age) {
+                a_ew.logged_age = worst;
             }
         }
 
@@ -111,21 +152,29 @@ namespace FreezeLogger::Watchdog {
                 const auto main   = Heartbeat::Main();
                 const auto render = Heartbeat::Render();
                 const auto fgOurs = ForegroundIsOurs();
+                // A hard freeze that loses focus is still a freeze: if the
+                // window is hung (message pump dead) we must capture it even
+                // when it is not in the foreground. Only an unfocused window
+                // that is *still pumping* (genuine alt-tab idle) is suppressed.
+                const auto hung    = MainWindowIsHung();
+                const bool canTrip = fgOurs || hung;
 
                 const auto step = Step(
                     state, now, main, render,
                     cfg.threshold_ms, cfg.snapshot_cooldown_s,
-                    /*a_canTrip=*/fgOurs);
+                    /*a_canTrip=*/canTrip);
 
                 MaybeLogEarlyWarning(earlyWarn, now,
                                      step.main_age_ms, step.render_age_ms,
-                                     cfg.threshold_ms, fgOurs);
+                                     cfg.threshold_ms, canTrip);
 
                 switch (step.action) {
                 case Action::EmitSnapshot:
                     logs::warn(
-                        "Freeze detected: stalled={}, mainAge={}ms, renderAge={}ms",
-                        ToString(step.stalled), step.main_age_ms, step.render_age_ms);
+                        "Freeze detected: stalled={}, mainAge={}ms, renderAge={}ms "
+                        "(foreground={}, windowHung={})",
+                        ToString(step.stalled), step.main_age_ms, step.render_age_ms,
+                        fgOurs, hung);
                     Reporter::CaptureAndWrite(step.stalled,
                                               step.main_age_ms,
                                               step.render_age_ms);
@@ -134,8 +183,9 @@ namespace FreezeLogger::Watchdog {
                 case Action::SuppressedStall:
                     logs::debug(
                         "Watchdog: stall observed (stalled={}, mainAge={}ms, renderAge={}ms) "
-                        "but Skyrim window is not in foreground; suppressing snapshot "
-                        "(treating as alt-tab / minimised idle).",
+                        "but Skyrim window is not in foreground and not hung; suppressing "
+                        "snapshot (treating as alt-tab / minimised idle). Will escalate to "
+                        "a snapshot if the window becomes hung.",
                         ToString(step.stalled), step.main_age_ms, step.render_age_ms);
                     break;
 

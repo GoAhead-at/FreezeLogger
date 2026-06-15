@@ -12,6 +12,7 @@
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
         "VCPKG_TARGET_TRIPLET": "x64-windows-static",
+        "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/cmake/vcpkg-triplets",
         "FL_DEBUG_TRIGGERS": "OFF",
         "FL_BUILD_TESTS": "ON"
       }
@@ -23,6 +24,7 @@
       "binaryDir": "${sourceDir}/build/debug",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
+        "VCPKG_OVERLAY_TRIPLETS": "",
         "FL_DEBUG_TRIGGERS": "ON"
       }
     },

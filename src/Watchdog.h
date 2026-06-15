@@ -85,8 +85,12 @@ namespace FreezeLogger::Watchdog {
 
     // a_canTrip = false means: even if heartbeats look stalled, do not write
     // a snapshot. Callers use this to suppress false-positives when the
-    // Skyrim window is not in the foreground (Skyrim's WinMain idle path
-    // intentionally sleeps the main thread when unfocused).
+    // Skyrim window is a genuine unfocused idle (Skyrim's WinMain idle path
+    // intentionally sleeps the main thread when unfocused). The real caller
+    // passes a_canTrip = (foreground-is-ours OR window-is-hung), so a hard
+    // freeze that lost focus -- window hung, message pump dead -- still trips.
+    // Because suppression no longer latches permanently, a stall first seen
+    // while unfocused-idle will escalate to a snapshot once the window hangs.
     inline StepResult Step(
         State&        a_state,
         std::uint64_t a_now,
@@ -113,24 +117,30 @@ namespace FreezeLogger::Watchdog {
 
         const auto stalled = Classify(a_now, a_mainHeartbeat, a_renderHeartbeat, a_thresholdMs);
 
-        // Fresh stall observed and we're not already tracking one.
-        if (stalled != StalledThread::None &&
-            !a_state.in_freeze &&
-            !a_state.suppressed_freeze)
-        {
+        // Stall in progress and we have not yet written a snapshot for it.
+        // This covers three cases: a fresh stall, a stall that is still
+        // suppressed, and -- crucially -- a previously-suppressed stall that
+        // can now trip (the window became hung). The suppression decision is
+        // therefore re-evaluated on every poll instead of latching forever.
+        if (stalled != StalledThread::None && !a_state.in_freeze) {
             if (!a_canTrip) {
-                // Suppression path: latch into suppressed_freeze so we don't
-                // re-classify (and re-log) every check_interval. No snapshot,
-                // no last_snapshot_at_ms update, no cooldown gating.
-                a_state.suppressed_freeze    = true;
-                a_state.freeze_thread        = stalled;
-                a_state.freeze_started_at_ms = a_now;
+                // Cannot trip right now (window neither foreground nor hung):
+                // genuine unfocused idle. Latch suppressed_freeze once so we
+                // don't re-log every check_interval; no snapshot, no cooldown.
+                if (!a_state.suppressed_freeze) {
+                    a_state.suppressed_freeze    = true;
+                    a_state.freeze_thread        = stalled;
+                    a_state.freeze_started_at_ms = a_now;
 
-                result.action  = Action::SuppressedStall;
-                result.stalled = stalled;
+                    result.action  = Action::SuppressedStall;
+                    result.stalled = stalled;
+                }
                 return result;
             }
 
+            // a_canTrip == true: a fresh foreground/hung stall, or escalation
+            // of a stall that was suppressed while the window was merely
+            // unfocused and has since gone hung.
             const bool inCooldown =
                 a_state.last_snapshot_at_ms != 0 &&
                 (a_now - a_state.last_snapshot_at_ms) <
@@ -139,6 +149,7 @@ namespace FreezeLogger::Watchdog {
                 return result;
             }
             a_state.in_freeze            = true;
+            a_state.suppressed_freeze    = false;  // escalated out of suppression
             a_state.freeze_started_at_ms = a_now;
             a_state.freeze_thread        = stalled;
             a_state.last_snapshot_at_ms  = a_now;
