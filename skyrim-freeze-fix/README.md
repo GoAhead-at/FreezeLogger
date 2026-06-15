@@ -1,12 +1,20 @@
 # WorkerSpinLockFix
 
-SKSE plugin for **Skyrim SE 1.5.97** that fixes a documented AB-BA
-spinlock inversion in the engine's worker dispatcher.
+SKSE plugin for **Skyrim SE 1.5.97 and AE 1.6.x** that fixes a
+documented AB-BA spinlock inversion in the engine's worker
+dispatcher.
 
-**v2.0.3** is the current release. It ships a structural fix
-layered on top of the v1.0.0 runtime breaker, plus a redesigned
-optional reaper backstop that no longer suspends any engine
-thread on the runtime path.
+**v2.2.0** is the current release. It adds **Anniversary Edition
+(1.6.x) support** — a single DLL now installs on both SE 1.5.97 and
+AE (VR is still refused). Every cross-version target was re-derived
+by static analysis of the unpacked AE 1.6.1170 binary and resolved
+through `REL::RelocationID{se, ae}` pairs with runtime-selected RVAs,
+call-site offsets, and struct offsets. See
+[Multi-version support](#multi-version-support) for the full map.
+
+It ships a structural fix layered on top of the v1.0.0 runtime
+breaker, plus an optional reaper backstop that does not suspend any
+engine thread on the runtime path.
 
 One inline hook (a wrap on the LockA acquirer at `id 19369`) plus
 two surgical call-site patches inside the cycle hub
@@ -43,7 +51,8 @@ engine thread for any reason. See
 | v2.0.0 | Released 2026-05-22, superseded | Adds the structural fix as Layer 1. Three function-wrap inline hooks on `id 19369` / `id 40333` / `id 40334`. Silently broke scripted-animation activators (skyshards) because the wrap on `id 19369` declared 4 args for a 6-arg engine function, so arg 5 / arg 6 were read off uninitialised stack every invocation. |
 | v2.0.1 | Internal only | Three diagnostic cuts. Final fix: 6-arg `bool`-returning `unsafe_call<bool>` wrap signature; defensive bit-toggle and bool-return paths kept. Subsequent refactor in the same version label rebases the LockB gates from function-wraps onto two surgical `Trampoline::write_call<5>` patches at `id 36016+0xdcb` and `id 19372+0x606`. See [`../docs/case-study/24-v2-0-1-skyshard-regression-fix.md`](../docs/case-study/24-v2-0-1-skyshard-regression-fix.md) and [`../docs/case-study/25-v2-0-1-callsite-refactor.md`](../docs/case-study/25-v2-0-1-callsite-refactor.md). |
 | v2.0.3 | Released 2026-05-24, superseded | Reaper redesigned around `WaitGraph::SnapshotEdges`. All `SuspendThread` / `GetThreadContext` / `ResumeThread` / `Toolhelp32` / register+stack scanning code is gone from the runtime path. Owner-aliveness probe uses `OpenThread + GetExitCodeThread`. Coverage trade-off: the reaper now requires `[acquire_hook] enabled = true` to populate the wait graph. Phase 1.5 confirmed all six known acquirers go through `id 12210`, so the loss of coverage is theoretical against the bug this plugin targets. See [`../docs/case-study/26-reaper-snapshot-removed.md`](../docs/case-study/26-reaper-snapshot-removed.md). |
-| v2.1.0 | **Current.** | Layer 2 detector moved off the entry point of `BSSpinLock::Acquire` onto a `safetyhook` **mid-hook at `id 12210 +0x8a`** (the retry point inside the engine's backoff spin loop). Only genuinely-stuck threads reach it, so uncontended and recursive acquires now run fully native with **zero added per-acquire cost** -- removing hot-path overhead that stacked badly under framerate-amplifying mods (e.g. PureDark's upscaler). Wait-graph edges are now self-expiring (50 ms staleness window) since a mid-hook has no clean "stopped waiting" callback; `confirmation_window_ms` is raised to 120 ms (> the staleness window) so a stale edge provably expires before any force-release, preserving the no-spurious-break guarantee. |
+| v2.1.0 | Released 2026-06-03, superseded | Layer 2 detector moved off the entry point of `BSSpinLock::Acquire` onto a `safetyhook` **mid-hook at `id 12210 +0x8a`** (the retry point inside the engine's backoff spin loop). Only genuinely-stuck threads reach it, so uncontended and recursive acquires now run fully native with **zero added per-acquire cost** -- removing hot-path overhead that stacked badly under framerate-amplifying mods (e.g. PureDark's upscaler). Wait-graph edges are now self-expiring (50 ms staleness window) since a mid-hook has no clean "stopped waiting" callback; `confirmation_window_ms` is raised to 120 ms (> the staleness window) so a stale edge provably expires before any force-release, preserving the no-spurious-break guarantee. |
+| v2.2.0 | **Current.** | **Anniversary Edition (1.6.x) support.** A single DLL now loads on SE 1.5.97 and AE; VR is still refused (`VerifyRuntime` gate). All engine targets were re-derived against the unpacked AE 1.6.1170 binary by *structural* analysis (byte signatures do not survive AE's recompile) and verified by disassembly, then wired in as `REL::RelocationID{se, ae}` pairs with runtime-selected lock RVAs, call-site offsets, and the `+0xe0 -> +0xe8` Actor-flags shift. `Phase4Defer::VerifyCallSite()` stays fail-safe: a wrong AE call-site offset aborts the patch cleanly instead of corrupting code. See [Multi-version support](#multi-version-support). |
 
 ## Scope
 
@@ -206,6 +215,49 @@ The plugin ships with a **synthetic AB-BA test harness** that can be
 enabled in the TOML to validate the breaker end-to-end on
 heap-allocated test BSSpinLocks without touching the engine. See
 [Testing the breaker](#testing-the-breaker).
+
+## Multi-version support
+
+As of v2.2.0 one DLL runs on **SE 1.5.97 and AE 1.6.x**. VR is
+explicitly refused — its targets have not been re-derived against
+the VR binary, so the plugin stays idle there rather than risk
+patching wrong addresses.
+
+AE's executable was recompiled with a different MSVC, so byte
+signatures do **not** transfer. Every target was instead pinned
+*structurally* against the unpacked AE 1.6.1170 binary and verified
+by disassembly:
+
+| Role | SE | AE | How the AE counterpart was pinned |
+|---|---|---|---|
+| `BSSpinLock::Acquire` | `id 12210` | `id 13663` | Identical `+0x8a` spin-retry offset and `self`-in-RDI / tid-in-EBP register contract. |
+| LockA acquirer (wrapped) | `id 19369` | `id 19796` | Unique recursive function holding a static spinlock; identical 6-arg `bool` prologue. AE *inlines* the LockA acquire. |
+| `AddToTempChangeList` | `id 40333` | `id 41343` | Unique "static spinlock guarding a bit-9 actor-flag toggle" fingerprint (`or [actor+0xe8],0x200`), `+0x158` bucket. |
+| `RemoveFromTempChangeList` | `id 40334` | `id 41344` | Twin of the above (`and [actor+0xe8],~0x200`), `+0x158`/`+0x168` bucket ops. |
+| Cycle hub | `id 36016` | `id 36991` | Call graph: the ~10 KB dispatch function that calls Remove directly and the add-wrapper. `call->Remove` at `+0xdcb -> +0xf6e`. |
+| Add-wrapper | `id 19372` | `id 19799` | The cycle hub's add arm; `call->Add` at `+0x606 -> +0x634`. |
+| LockA global | `0x2eff8e0` | `0x31376d8` | The static spinlock held by the recursive acquirer. |
+| LockB global | `0x2f3b8e8` | `0x319c2a8` | The static spinlock guarding the temp-change-list twins. |
+| Actor flags offset | `+0xe0` | `+0xe8` | Actor struct grew 8 bytes between editions. |
+
+All ids resolve through `REL::RelocationID{se, ae}`; all RVAs,
+call-site offsets, and struct offsets are runtime-selected via
+`REL::Module::IsAE()`. The two surgical call-site patches are still
+guarded by `Phase4Defer::VerifyCallSite()`, which checks the patch
+target is the expected `E8 rel32` call and **aborts cleanly** if an
+AE offset is wrong — so a bad offset can never corrupt the binary,
+it only downgrades that arm to the runtime breaker.
+
+The analysis tooling that produced this map lives under
+`../analysis/` (`ae_find_lockb.py`, `ae_recursive_lockers.py`,
+`ae_callers.py`, `ae_calltargets.py`, `ae_find_lacka.py`,
+`ae_dump.py`).
+
+> **First AE sessions:** there is no captured AB-BA *deadlock* on AE
+> yet — the structural fix is preventative and will sit dormant if
+> the cycle never forms. Running the first AE sessions with
+> `[phase4_defer] diagnostic_logging = true` is recommended so the
+> gate firings on the LA->LB path can be confirmed.
 
 ## Installation
 
@@ -405,10 +457,13 @@ The output archive is written to `dist-out\WorkerSpinLockFix_v<X.Y.Z>.rar`.
 
 ## Safety notes
 
-- **Hard runtime pin.** The plugin refuses to install hooks on any
-  build other than 1.5.97. The Address Library ID for
-  `BSSpinLock::Acquire` (`12210`) and the LockA/LockB RVAs only match
-  this version.
+- **Runtime gate.** The plugin installs on SE 1.5.97 and AE 1.6.x
+  only; every other SE build and VR are refused (the plugin loads
+  idle, leaving the engine unmodified). Cross-version targets are
+  resolved per runtime — `REL::RelocationID{se, ae}` for addrlib
+  ids, `REL::Module::IsAE()` for RVAs / call-site offsets / struct
+  offsets — so the wrong-version addresses can never be used. See
+  [Multi-version support](#multi-version-support).
 - **Surgical filter.** The detection path runs only for the two engine
   BSSpinLocks the plugin watches. Since the hook sits at the backoff
   retry point (`+0x8a`), every `BSSpinLock::Acquire` that does not

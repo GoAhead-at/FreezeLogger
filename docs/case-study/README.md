@@ -317,6 +317,20 @@ and ultimately used to localize a deadlock to two specific functions inside
   AcquireHook slow path), and why that trade-off is acceptable
   given the Phase 1.5 finding that all six known acquirers go
   through `id 12210`.
+- `28-jobwaitbreaker-design.md` - Design proposal for `JobWaitBreaker`,
+  a runtime breaker for the *second* freeze class (the Skyrim
+  `WaitForJobTask` hang from doc 27, distinct from the AB-BA spinlock
+  inversion). Triggered by capture `freeze_2026-06-15_160413`, the
+  first to walk the Site-B chain live and prove the **lost-wakeup**
+  mechanism: main commits to `WaitForSingleObject(INFINITE)` on a
+  manual-reset job-completion event, then another thread clears the job
+  sub-array (chain -> null) without signalling it, leaving main parked
+  forever with no producer alive. Proposes a tightly-gated breaker
+  (dwell threshold + null-chain + unsignaled-manual-event + no-producer
+  + re-check) that delivers the missing signal with one `SetEvent`,
+  plus a detect-only rollout phase, config, safety argument, and
+  interim load-reduction mitigation. Also records that this capture's
+  automated stuck-job attributor misfired on a `0x1` discriminator.
 - `appendix-A-evidence.md` - Raw freeze logs, disassembly excerpts, register
   dumps used as evidence in the main narrative.
 
