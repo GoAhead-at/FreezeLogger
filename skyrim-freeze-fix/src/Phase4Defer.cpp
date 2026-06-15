@@ -23,46 +23,73 @@ namespace WorkerSpinLockFix::Phase4Defer {
         }
 
         // ---------------------------------------------------------------
-        // Address Library ids identified during Phase 4.1.
-        // See docs/case-study/22-v2-phase4-1-cycle-hub-characterisation.md.
+        // Address Library ids identified during Phase 4.1 (SE 1.5.97) and
+        // ported to AE 1.6.1170 by static analysis of the unpacked AE
+        // binary (see analysis/ae_port.py, ae_find_lockb.py,
+        // ae_recursive_lockers.py, ae_callers.py, ae_calltargets.py).
+        //
+        // The AE counterparts were established structurally, NOT by byte
+        // signature (AE was recompiled, so byte sigs do not transfer):
+        //   * LockB + the Add/Remove twins were pinned by the unique
+        //     "static spinlock guarding a bit-9 actor-flag toggle"
+        //     fingerprint (SE +0xe0 bit9 -> AE +0xe8 bit9; Actor grew 8B).
+        //   * the cycle hub + add-wrapper were pinned by the call graph
+        //     (hub calls Remove directly and the add-wrapper, which calls
+        //     Add).
+        //   * the LockA acquirer was pinned as the unique recursive
+        //     function that holds a static spinlock; its prologue matches
+        //     SE id 19369 byte-for-byte in shape (6-arg bool, rcx->rsi /
+        //     rdx->rdi, cookie frame).
+        //
+        //   role                       SE id   AE id   AE verification
+        //   LockA acquirer (wrap)      19369   19796   same prologue, recursive, inlines LockA
+        //   AddToTempChangeList        40333   41343   fastcall(PL*,Actor*), +0x158, or [act+0xe8],0x200
+        //   RemoveFromTempChangeList   40334   41344   fastcall(PL*,Actor*), +0x158/+0x168, and [act+0xe8]
+        //   cycle hub                  36016   36991   call Remove @ +0xf6e (SE +0xdcb)
+        //   add-wrapper                19372   19799   call Add @ +0x634 (SE +0x606)
         // ---------------------------------------------------------------
 
         // The LockA acquirer. Acquires LockA on entry, releases on
         // return. The whole AB-BA cycle's LA->LB direction passes
-        // through this function: id 19369 -> id 19371 -> id 35974 ->
-        // id 36016 -> { id 40334 OR id 19372 -> id 40333 }.
-        constexpr std::uint64_t kID_LockA_Acquirer = 19369;
+        // through this function.
+        constexpr REL::RelocationID kID_LockA_Acquirer{ 19369, 19796 };
 
         // ProcessLists::AddToTempChangeList(pl, actor). Locks LockB,
         // appends actor to the bucket array at [pl+0x158], sets bit 9
-        // of [actor+0xe0] (Actor::BOOL_BITS::kInTempChangeList).
+        // of the actor flags (SE [actor+0xe0] / AE [actor+0xe8]).
         // We never patch the function itself; we patch the SINGLE call
         // site that is reachable while LockA is held -- see below.
-        constexpr std::uint64_t kID_AddToTempChangeList = 40333;
+        constexpr REL::RelocationID kID_AddToTempChangeList{ 40333, 41343 };
 
         // ProcessLists::RemoveFromTempChangeList(pl, actor). Locks
         // LockB, removes actor from the bucket array, clears bit 9 of
-        // [actor+0xe0], clears the private global at 0x2f44db0 if it
-        // points to actor. Same patching-strategy comment applies.
-        constexpr std::uint64_t kID_RemoveFromTempChangeList = 40334;
+        // the actor flags. Same patching-strategy comment applies.
+        constexpr REL::RelocationID kID_RemoveFromTempChangeList{ 40334, 41344 };
 
-        // The cycle hub: 96-way event-dispatch switch reached from
-        // id 19369 -> id 19371 -> id 35974. Has a direct
-        // `call id 40334` at +0xdcb (gated by a PlayerCharacter
-        // pointer check at +0xdc4) and a direct `call id 19372` at
-        // +0xfa3 (which then calls id 40333 internally).
-        constexpr std::uint64_t   kID_CycleHub                 = 36016;
-        constexpr std::ptrdiff_t  kOff_CycleHub_CallRemove     = 0xdcb;
+        // The cycle hub: 96-way event-dispatch switch. Has a direct
+        // `call <Remove>` (SE id 36016+0xdcb / AE id 36991+0xf6e, gated
+        // by a PlayerCharacter pointer check) and a direct call to the
+        // add-wrapper which then calls <Add> internally.
+        constexpr REL::RelocationID kID_CycleHub{ 36016, 36991 };
 
-        // The "AddToTempChangeList wrapper": small function reached
-        // from the cycle hub at id 36016+0xfa3. Its body does some
-        // stack-flag bookkeeping and then directly calls id 40333 at
-        // +0x606. By patching id 19372+0x606 instead of patching the
-        // entry of id 40333, we restrict our gate's blast radius to
-        // exactly the cycle path -- callers of id 40333 from outside
-        // the cycle do not pay the gate cost at all.
-        constexpr std::uint64_t   kID_AddViaWrapper            = 19372;
-        constexpr std::ptrdiff_t  kOff_AddViaWrapper_CallAdd   = 0x606;
+        // The "AddToTempChangeList wrapper": reached from the cycle hub.
+        // Its body does some stack-flag bookkeeping and then directly
+        // calls <Add> (SE id 19372+0x606 / AE id 19799+0x634). By
+        // patching the call site instead of the entry of <Add>, we
+        // restrict our gate's blast radius to exactly the cycle path.
+        constexpr REL::RelocationID kID_AddViaWrapper{ 19372, 19799 };
+
+        // Call-site offsets within the cycle hub / add-wrapper. These are
+        // inside-function offsets, NOT addrlib ids, so they cannot be
+        // resolved by RelocationID -- AE's recompile relaid the function
+        // bodies out and the call sites moved. They are re-derived per
+        // runtime; VerifyCallSite() below fails safe if either is wrong.
+        inline std::ptrdiff_t Off_CycleHub_CallRemove() noexcept {
+            return REL::Module::IsAE() ? 0xf6e : 0xdcb;
+        }
+        inline std::ptrdiff_t Off_AddViaWrapper_CallAdd() noexcept {
+            return REL::Module::IsAE() ? 0x634 : 0x606;
+        }
 
         // ---------------------------------------------------------------
         // Per-thread state.
@@ -106,7 +133,7 @@ namespace WorkerSpinLockFix::Phase4Defer {
         // animation activation regression -- see
         // docs/case-study/24-v2-0-1-skyshard-regression-fix.md).
         //
-        // kBoolBitsOffset:        byte offset of Actor::boolBits.
+        // BoolBitsOffset():       byte offset of Actor::boolBits.
         // kInTempChangeListMask:  bit 9 == kInTempChangeList.
         //
         // The original id 40333 sets the bit and id 40334 clears it.
@@ -117,16 +144,21 @@ namespace WorkerSpinLockFix::Phase4Defer {
         // both writes converge to the same final value (idempotent
         // fetch_or / fetch_and on the same mask).
         // ---------------------------------------------------------------
-        constexpr std::ptrdiff_t  kBoolBitsOffset       = 0xe0;
         constexpr std::uint32_t   kInTempChangeListMask = 0x200u;  // bit 9
 
+        // Byte offset of Actor::boolBits. The Actor struct grew 8 bytes
+        // between SE 1.5.97 and AE 1.6.x, shifting this field from +0xe0
+        // to +0xe8 (verified by disassembly of id 41343/41344, which
+        // toggle bit 9 of [actor+0xe8] on AE).
+        inline std::ptrdiff_t BoolBitsOffset() noexcept {
+            return REL::Module::IsAE() ? 0xe8 : 0xe0;
+        }
+
         inline std::atomic<std::uint32_t>* BoolBitsAtomic(void* actor) noexcept {
-            // Actor::boolBits is std::atomic<std::uint32_t> at +0xe0
-            // (CommonLibSSE-NG RE/A/Actor.h). reinterpret_cast is safe:
-            // std::atomic<std::uint32_t> is layout-compatible with a
-            // plain uint32_t on x86-64 MSVC.
+            // Actor::boolBits is std::atomic<std::uint32_t> (layout-
+            // compatible with plain uint32_t on x86-64 MSVC).
             return reinterpret_cast<std::atomic<std::uint32_t>*>(
-                reinterpret_cast<std::byte*>(actor) + kBoolBitsOffset);
+                reinterpret_cast<std::byte*>(actor) + BoolBitsOffset());
         }
 
         // ---------------------------------------------------------------
@@ -357,14 +389,21 @@ namespace WorkerSpinLockFix::Phase4Defer {
         // Resolve an addrlib id to a runtime function address.
         // Returns 0 on failure with a critical log.
         // ---------------------------------------------------------------
-        std::uintptr_t ResolveId(std::uint64_t id, const char* what) {
+        std::uintptr_t ResolveId(const REL::RelocationID& rid, const char* what) {
             try {
-                const REL::Relocation<std::uintptr_t> rel{ REL::ID(id) };
-                return rel.address();
+                const auto addr = rid.address();
+                if (addr == 0) {
+                    logs::critical(
+                        "[Phase4Defer] failed to resolve id {} ({}): "
+                        "address() returned 0 (id not in this runtime's "
+                        "Address Library?).",
+                        rid.id(), what);
+                }
+                return addr;
             } catch (const std::exception& e) {
                 logs::critical(
                     "[Phase4Defer] failed to resolve id {} ({}): {}",
-                    id, what, e.what());
+                    rid.id(), what, e.what());
                 return 0;
             }
         }
@@ -418,15 +457,15 @@ namespace WorkerSpinLockFix::Phase4Defer {
             std::memory_order_relaxed);
 
         const auto a_lockA       = ResolveId(kID_LockA_Acquirer,
-                                             "LockA acquirer (id 19369)");
+                                             "LockA acquirer (SE 19369 / AE 19796)");
         const auto a_add         = ResolveId(kID_AddToTempChangeList,
-                                             "AddToTempChangeList (id 40333)");
+                                             "AddToTempChangeList (SE 40333 / AE 41343)");
         const auto a_remove      = ResolveId(kID_RemoveFromTempChangeList,
-                                             "RemoveFromTempChangeList (id 40334)");
+                                             "RemoveFromTempChangeList (SE 40334 / AE 41344)");
         const auto a_cyclehub    = ResolveId(kID_CycleHub,
-                                             "cycle hub (id 36016)");
+                                             "cycle hub (SE 36016 / AE 36991)");
         const auto a_addwrapper  = ResolveId(kID_AddViaWrapper,
-                                             "Add wrapper (id 19372)");
+                                             "Add wrapper (SE 19372 / AE 19799)");
         if (a_lockA == 0 || a_add == 0 || a_remove == 0 ||
             a_cyclehub == 0 || a_addwrapper == 0) {
             g_installed.store(false, std::memory_order_release);
@@ -434,17 +473,17 @@ namespace WorkerSpinLockFix::Phase4Defer {
         }
 
         const auto remove_call_site =
-            a_cyclehub + static_cast<std::uintptr_t>(kOff_CycleHub_CallRemove);
+            a_cyclehub + static_cast<std::uintptr_t>(Off_CycleHub_CallRemove());
         const auto add_call_site =
-            a_addwrapper + static_cast<std::uintptr_t>(kOff_AddViaWrapper_CallAdd);
+            a_addwrapper + static_cast<std::uintptr_t>(Off_AddViaWrapper_CallAdd());
 
         if (!VerifyCallSite(remove_call_site, a_remove,
-                            "id 36016+0xdcb (call id 40334)")) {
+                            "cycle hub call->Remove")) {
             g_installed.store(false, std::memory_order_release);
             return false;
         }
         if (!VerifyCallSite(add_call_site, a_add,
-                            "id 19372+0x606 (call id 40333)")) {
+                            "add-wrapper call->Add")) {
             g_installed.store(false, std::memory_order_release);
             return false;
         }

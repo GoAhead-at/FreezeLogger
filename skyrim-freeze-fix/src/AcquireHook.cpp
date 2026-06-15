@@ -10,10 +10,23 @@ namespace WorkerSpinLockFix::AcquireHook {
 
         // RVAs from static analysis (case-study/06-root-cause.md and
         // confirmed live across 9 pre-WSLF freeze captures). The two
-        // engine BSSpinLocks that race in vanilla Skyrim 1.5.97 worker-
-        // pool dispatch.
-        constexpr std::uintptr_t kLockA_RVA = 0x2eff8e0;
-        constexpr std::uintptr_t kLockB_RVA = 0x2f3b8e8;
+        // engine BSSpinLocks that race in vanilla Skyrim worker-pool
+        // dispatch.
+        //
+        // AE 1.6.x RVAs were re-derived from the unpacked AE binary
+        // (analysis/ae_recursive_lockers.py pins LockA as the lock held
+        // by the recursive acquirer id 19796; analysis/ae_find_lockb.py
+        // pins LockB as the lock guarding the Add/Remove temp-change
+        // twins id 41343/41344). LockA/LockB are static globals, so the
+        // module-relative RVA is what we need.
+        //   LockA: SE 0x2eff8e0 -> AE 0x31376d8
+        //   LockB: SE 0x2f3b8e8 -> AE 0x319c2a8
+        inline std::uintptr_t LockA_RVA() noexcept {
+            return REL::Module::IsAE() ? 0x31376d8 : 0x2eff8e0;
+        }
+        inline std::uintptr_t LockB_RVA() noexcept {
+            return REL::Module::IsAE() ? 0x319c2a8 : 0x2f3b8e8;
+        }
 
         SafetyHookMid      g_spin_retry_hook{};
         std::uintptr_t     g_spin_retry_addr{ 0 };
@@ -130,8 +143,8 @@ namespace WorkerSpinLockFix::AcquireHook {
                 "(every Acquire will fast-path).");
             return;
         }
-        g_lockA = reinterpret_cast<WaitGraph::Lock*>(base + kLockA_RVA);
-        g_lockB = reinterpret_cast<WaitGraph::Lock*>(base + kLockB_RVA);
+        g_lockA = reinterpret_cast<WaitGraph::Lock*>(base + LockA_RVA());
+        g_lockB = reinterpret_cast<WaitGraph::Lock*>(base + LockB_RVA());
     }
 
     std::uintptr_t SpinRetryAddress() noexcept {
@@ -143,13 +156,18 @@ namespace WorkerSpinLockFix::AcquireHook {
             return g_spin_retry_addr;
         }
         try {
-            const REL::Relocation<std::uintptr_t> acquire{ REL::ID(12210) };
+            // BSSpinLock::Acquire: SE id 12210 -> AE id 13663. The
+            // +0x8a spin-retry offset and the self-in-RDI / tid-in-EBP
+            // register contract are identical on both runtimes (verified
+            // by disassembly: analysis/ae_dump.py id 13663).
+            const REL::Relocation<std::uintptr_t> acquire{
+                REL::RelocationID(12210, 13663) };
             g_spin_retry_addr = acquire.address() + 0x8a;
             return g_spin_retry_addr;
         } catch (const std::exception& e) {
             logs::critical(
                 "[AcquireHook] failed to resolve BSSpinLock::Acquire "
-                "(id 12210): {}", e.what());
+                "(SE id 12210 / AE id 13663): {}", e.what());
             return 0;
         }
     }
@@ -201,8 +219,8 @@ namespace WorkerSpinLockFix::AcquireHook {
             "[AcquireHook] surgical filter targets: LockA=0x{:x} "
             "(RVA 0x{:x}), LockB=0x{:x} (RVA 0x{:x}). All other "
             "BSSpinLocks are invisible to the detector.",
-            reinterpret_cast<std::uintptr_t>(g_lockA), kLockA_RVA,
-            reinterpret_cast<std::uintptr_t>(g_lockB), kLockB_RVA);
+            reinterpret_cast<std::uintptr_t>(g_lockA), LockA_RVA(),
+            reinterpret_cast<std::uintptr_t>(g_lockB), LockB_RVA());
         return true;
     }
 

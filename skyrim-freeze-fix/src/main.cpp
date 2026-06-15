@@ -10,22 +10,52 @@ namespace {
 
     bool VerifyRuntime() {
         const auto rt = REL::Module::GetRuntime();
-        if (rt != REL::Module::Runtime::SE) {
-            logs::critical("Unsupported runtime: only Skyrim SE 1.5.97 is targeted.");
-            return false;
-        }
+        const auto v  = REL::Module::get().version();
 
-        const auto v = REL::Module::get().version();
-        if (v.major() != 1 || v.minor() != 5 || v.patch() != 97) {
+        // VR is explicitly out of scope for now: the AB-BA targets have
+        // not been re-derived against the VR binary, so we refuse rather
+        // than risk patching the wrong addresses.
+        if (rt == REL::Module::Runtime::VR) {
             logs::critical(
-                "Unsupported SE version: {}.{}.{}.{} (this plugin pins SE 1.5.97).",
+                "Unsupported runtime: Skyrim VR ({}.{}.{}.{}). VR support "
+                "is not yet implemented; the plugin will stay idle.",
                 v.major(), v.minor(), v.patch(), v.build());
             return false;
         }
 
-        logs::info("Runtime confirmed: Skyrim SE {}.{}.{}.{}",
-            v.major(), v.minor(), v.patch(), v.build());
-        return true;
+        // SE: the original target. Pinned to 1.5.97 -- the only SE build
+        // whose addrlib ids / RVAs in this plugin were validated.
+        if (rt == REL::Module::Runtime::SE) {
+            if (v.major() != 1 || v.minor() != 5 || v.patch() != 97) {
+                logs::critical(
+                    "Unsupported SE version: {}.{}.{}.{} (this plugin pins "
+                    "SE 1.5.97).",
+                    v.major(), v.minor(), v.patch(), v.build());
+                return false;
+            }
+            logs::info("Runtime confirmed: Skyrim SE {}.{}.{}.{}",
+                v.major(), v.minor(), v.patch(), v.build());
+            return true;
+        }
+
+        // AE: targets ported from SE via static analysis of the unpacked
+        // AE 1.6.1170 binary. All cross-version addresses are resolved
+        // through REL::RelocationID pairs (addrlib ids) or runtime-
+        // selected RVAs/offsets, so any AE build whose Address Library
+        // carries these ids works; the structural fix's VerifyCallSite()
+        // is fail-safe if a call-site offset does not match.
+        if (rt == REL::Module::Runtime::AE) {
+            logs::info("Runtime confirmed: Skyrim AE {}.{}.{}.{}",
+                v.major(), v.minor(), v.patch(), v.build());
+            logs::warn(
+                "AE support is newly ported (validated against 1.6.1170). "
+                "Phase4Defer diagnostic logging is recommended ON for the "
+                "first AE sessions; please report anomalies.");
+            return true;
+        }
+
+        logs::critical("Unsupported runtime (unknown).");
+        return false;
     }
 
     void OnSkseMessage(SKSE::MessagingInterface::Message* msg) {

@@ -33,17 +33,20 @@ namespace WorkerSpinLockFix::TestMode {
 
         using AcquireFn = void(__fastcall*)(WaitGraph::Lock*);
 
-        // Resolve the real BSSpinLock::Acquire (id 12210) entry-point
-        // address. The hook intercepts calls to this address, so calling
-        // through the resolved pointer routes through the surgical hook
-        // exactly as the engine would. Returns nullptr on failure.
+        // Resolve the real BSSpinLock::Acquire (SE id 12210 / AE id
+        // 13663) entry-point address. The hook intercepts calls to this
+        // address, so calling through the resolved pointer routes through
+        // the surgical hook exactly as the engine would. Returns nullptr
+        // on failure.
         AcquireFn ResolveAcquire() noexcept {
             try {
-                const REL::Relocation<std::uintptr_t> acquire{ REL::ID(12210) };
+                const REL::Relocation<std::uintptr_t> acquire{
+                    REL::RelocationID(12210, 13663) };
                 return reinterpret_cast<AcquireFn>(acquire.address());
             } catch (const std::exception& e) {
                 logs::critical(
-                    "[TEST] could not resolve BSSpinLock::Acquire (id 12210): {}",
+                    "[TEST] could not resolve BSSpinLock::Acquire "
+                    "(SE id 12210 / AE id 13663): {}",
                     e.what());
                 return nullptr;
             }
