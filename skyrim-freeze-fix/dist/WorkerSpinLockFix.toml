@@ -60,9 +60,16 @@ diagnostic_logging = false
 #
 # This module wraps WaitForJobTask (located by a version-independent
 # .text body signature) to track when main is parked and on which job
-# index, then a watchdog thread detects the lost-wakeup signature
-# (main parked past `dwell_threshold_ms` on a job slot that has since
-# been torn down to null) and recovers the engine.
+# index, then a watchdog thread detects a stuck job-wait and recovers
+# the engine. A job-wait is judged stuck when main has been parked past
+# `dwell_threshold_ms` AND the job entry it is waiting on makes ZERO
+# progress across `recheck_window_ms` -- either the chain has been torn
+# down to null (the producer cleared the queue after main parked), or
+# the entry's bytes are byte-for-byte identical (an orphaned job that
+# no thread is advancing). Both shapes have been observed in the field
+# (freeze_2026-06-15_160413 = torn-down; freeze_2026-06-15_204830 =
+# stalled-intact). A genuinely long but progressing job mutates its
+# counters within the window and is left alone.
 
 # Master switch for the module.
 enabled = true
@@ -83,18 +90,22 @@ enabled = true
 detect_only = true
 
 # How long the main thread must be parked in WaitForJobTask before the
-# module treats it as stuck (milliseconds). Far above any legitimate
-# job-wait during play, well below FreezeLogger's 15 s freeze watchdog.
-dwell_threshold_ms = 3000
+# module treats it as a candidate stall (milliseconds). Far above any
+# legitimate job-wait during play, well below FreezeLogger's 15 s freeze
+# watchdog.
+dwell_threshold_ms = 5000
 
 # Watchdog poll cadence (milliseconds).
 poll_interval_ms = 1000
 
-# Confirmation re-check window (milliseconds). After the dwell +
-# teardown gate first matches, the watchdog waits this long and
-# re-verifies before acting, so a legitimate late completion can never
-# be raced into a spurious release.
-recheck_window_ms = 250
+# Zero-progress confirmation window (milliseconds). After the dwell
+# threshold is reached the watchdog snapshots the job entry, waits this
+# long, and re-samples; it only acts if the job made NO progress across
+# the window (chain still null, or entry bytes byte-for-byte identical).
+# This is the main safety knob: a long-but-progressing job mutates its
+# counters within the window and is left alone, so raise this value to
+# make the breaker more conservative.
+recheck_window_ms = 1500
 
 # Verbose per-decision logging for the watchdog. Default: false.
 diagnostic_logging = false

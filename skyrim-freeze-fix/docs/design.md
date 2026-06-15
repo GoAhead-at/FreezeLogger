@@ -30,17 +30,21 @@ The plugin's two current layers:
    of `id 40333` / `id 40334` are left pristine so other mods
    that hook those functions cooperate with this plugin. This is now
    the sole fix for the AB-BA inversion (see §2.1, §3.1).
-2. **Layer 2 - WaitForJobTask lost-wakeup recovery (`JobWaitBreaker`,
+2. **Layer 2 - WaitForJobTask stuck-job recovery (`JobWaitBreaker`,
    new in v2.3.0).** A *separate* engine freeze class (case-study
-   27/28): `Main::Update` parks in `WaitForJobTask` on a manual-reset
-   job-completion event that a producer tore down without signalling,
-   so main sleeps forever. An inline wrap on `WaitForJobTask` (located
-   by a version-independent `.text` body signature, with the
-   Singleton-B job slot derived from its rip-relative load) tracks when
-   main is parked; a watchdog detects the lost-wakeup signature (parked
-   past a dwell threshold on a job slot torn down to null) and, in
-   active mode, delivers the missing signal via `SetEvent`. Ships
-   detect-only by default until field-validated. See §3.7 and
+   27/28): `Main::Update` parks in `WaitForJobTask` on a job-completion
+   event that no producer will ever signal, so main sleeps forever. Two
+   field-observed shapes: the job entry is torn down to null
+   (`freeze_2026-06-15_160413`), or it stays in place but makes zero
+   progress (`freeze_2026-06-15_204830`). An inline wrap on
+   `WaitForJobTask` (located by a version-independent `.text` body
+   signature, with the Singleton-B job slot derived from its
+   rip-relative load) tracks when main is parked and derives the exact
+   wait handle from the job-pool chain at wait entry; a watchdog detects
+   the stuck signature (parked past a dwell threshold with the job
+   making no progress across a confirmation window) and, in active mode,
+   delivers the missing signal via `SetEvent`. No process-wide hook is
+   used. See §3.7 and
    [`../../docs/case-study/28-jobwaitbreaker-design.md`](../../docs/case-study/28-jobwaitbreaker-design.md).
 
 The two layers are fully independent: they target different bugs, hook
@@ -589,28 +593,36 @@ drives the Site-B freeze probe. If the signature is not found,
 
 1. **`WaitForJobTask` inline wrap.** On the main thread (pinned on
    first call), the outermost entry records "in a job-wait since `T`,
-   on job index `N`", resets the captured handle, and bumps an episode
-   sequence; the matching exit clears the flag. A `thread_local` depth
-   counter keeps nested calls in one episode. The wrap returns the
-   original's value (declared `uintptr_t`, a safe superset).
+   on job index `N`", bumps an episode sequence, and derives the exact
+   wait handle from the job-pool chain
+   (`*(singleton) -> [+8] -> [idx0*8] -> [0] -> [idx1*8]`, SEH-guarded)
+   while the chain is still intact; the matching exit clears the flag. A
+   `thread_local` depth counter keeps nested calls in one episode. The
+   wrap returns the original's value (declared `uintptr_t`, a safe
+   superset). Capturing the handle here (rather than via a process-wide
+   `WaitForSingleObjectEx` hook) is what makes the torn-down variant
+   recoverable -- the handle is saved before any teardown -- and removes
+   all global hot-path cost.
 2. **Watchdog thread.** Polls at `poll_interval_ms`. When main has been
-   parked longer than `dwell_threshold_ms`, it reads the job slot
-   (`*(singleton) -> [+8] -> [idx*8]`, SEH-guarded). A `null` there
-   means the job was torn down after main parked -- the lost-wakeup
-   signature. It re-verifies after `recheck_window_ms` (same episode,
-   still parked, still torn down) before acting, so a legitimate late
-   completion is never raced. A long job that is *still in flight* (slot
-   populated) is left alone -- it is not a lost wakeup.
-3. **Release (active mode only).** `SetEvent` on the handle main is
-   parked on, captured by a tightly-filtered `WaitForSingleObjectEx`
-   wrap (installed only when `detect_only=false`). Because the gate
-   requires the job to already be gone, waking main is equivalent to
+   parked longer than `dwell_threshold_ms`, it snapshots the job entry
+   main is waiting on (`*(singleton) -> [+8] -> [idx0*8]`, then its 8
+   header qwords, SEH-guarded), waits `recheck_window_ms`, and
+   re-samples. It acts only if the job made **zero progress** across the
+   window: either the chain stayed torn down to null
+   (`freeze_2026-06-15_160413`), or the entry's bytes are byte-for-byte
+   identical (`freeze_2026-06-15_204830`). A long job that is *still
+   progressing* mutates its counters within the window, changes the
+   fingerprint, and is left alone.
+3. **Release (active mode only).** `SetEvent` on the handle derived in
+   step 1. Because the gate requires the job to be provably making no
+   progress (and no producer is coming), waking main is equivalent to
    the signal that was lost.
 
-Defaults: `enabled=true`, `detect_only=true` (logs the signature,
-changes nothing) until the release path is field-validated. The module
-never suspends an engine thread or reads a thread context -- a
-deliberate contrast with the retired reaper (§3.5).
+Defaults: `enabled=true`, `dwell_threshold_ms=5000`,
+`recheck_window_ms=1500` (the main conservatism knob -- a job that
+changes within it is treated as live). The module never suspends an
+engine thread or reads a thread context -- a deliberate contrast with
+the retired reaper (§3.5), and it installs no process-wide hook.
 
 ---
 

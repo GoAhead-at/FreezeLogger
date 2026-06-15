@@ -62,15 +62,19 @@ namespace WorkerSpinLockFix::Config {
         // How long main must be parked in WaitForJobTask before the
         // module considers it stuck. Far above any legitimate job-wait
         // during play, well below the FreezeLogger 15 s watchdog.
-        std::uint32_t jwb_dwell_threshold_ms{ 3000 };
+        std::uint32_t jwb_dwell_threshold_ms{ 5000 };
 
         // Watchdog poll cadence.
         std::uint32_t jwb_poll_interval_ms{ 1000 };
 
-        // Confirmation re-check window: after the dwell + teardown gate
-        // first matches, the watchdog waits this long and re-verifies
-        // before acting, so a legitimate late completion is never raced.
-        std::uint32_t jwb_recheck_window_ms{ 250 };
+        // Zero-progress confirmation window. After the dwell threshold is
+        // reached the watchdog snapshots the job entry, waits this long,
+        // and re-samples; it only acts if the job made NO progress across
+        // the window (chain still null, or entry bytes byte-for-byte
+        // identical). A long-but-progressing job mutates its counters
+        // within this window and is left alone, so raising this value
+        // makes the breaker more conservative.
+        std::uint32_t jwb_recheck_window_ms{ 1500 };
 
         // Verbose per-decision logging for the watchdog.
         bool jwb_diagnostic_logging{ false };
