@@ -60,9 +60,14 @@ namespace WorkerSpinLockFix::Phase4Defer {
     // id 19369) is left entirely alone. Once the LA->LB edge is
     // broken, the AB-BA cycle simply cannot form.
     //
-    // Returns true when all three hooks installed cleanly. Returns
-    // false on any partial failure; on partial failure ALL hooks
-    // are torn down so the engine runs unmodified.
+    // Returns true when all hooks installed cleanly. Returns false on
+    // any partial failure. On failure the LockA wrap is torn down, so
+    // tl_lockA_depth can never leave 0; the two cycle-hub call-site
+    // gates (g_orig_* are assigned before either gate is patched) then
+    // always take their pass-through branch and invoke the saved
+    // original id 40333 / id 40334. The engine therefore runs with its
+    // original behaviour plus a harmless extra indirection, never a
+    // half-applied deferral.
     bool Install();
 
 }

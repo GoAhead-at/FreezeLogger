@@ -63,7 +63,7 @@ namespace FreezeLogger::Snapshot::MainWaitProbe {
         //   SkyrimSE+0x5b34fe   <-- main's saved return address
         //
         //   SkyrimSE+0xc38130   mov rax, [rip + 0x22ee539]   ; load Singleton-B
-        //                       (target = SkyrimSE+0x2f26a70 — the task-pool
+        //                       (target = SkyrimSE+0x2f26670 — the task-pool
         //                        / job-queue holder; identity confirmed by
         //                        the FSMP maintainer)
         //                       mov r8d, ecx                 ; arg1 -> r8d
@@ -83,7 +83,14 @@ namespace FreezeLogger::Snapshot::MainWaitProbe {
         // this struct "Singleton-B" in the code because the name is wired
         // throughout the probes and the freeze-report format; the report's
         // text labels it as the task-pool / WaitForJobTask producer.
-        constexpr std::uintptr_t kSingletonBPtrRVA = 0x2f26a70;
+        // Corrected from the old 0x2f26a70: the WaitForJobTask prologue
+        // `mov rax,[rip+0x22ee539]` at +0xc38130 resolves to its next
+        // instruction (+0xc38137) + 0x22ee539 = +0x2f26670. The earlier
+        // 0x2f26a70 was a +0x400 hand-arithmetic slip (same bug fixed in
+        // SkyrimAnchors / CHANGELOG) that made this SE-only probe read the
+        // wrong slot while the runtime-anchored Task-pool section read the
+        // correct one.
+        constexpr std::uintptr_t kSingletonBPtrRVA = 0x2f26670;
         constexpr std::uintptr_t kWaitWrapperLoRVA = 0xc38130;
         constexpr std::uintptr_t kWaitWrapperHiRVA = 0xc3815b;
         constexpr std::uintptr_t kMainUpdateRetBRVA = 0x5b34fe;
@@ -705,7 +712,7 @@ namespace FreezeLogger::Snapshot::MainWaitProbe {
         // Layout (best understood, from the constructor cluster id5578-id5600
         // around RVA +0x9220b..+0x92993; see analysis/xref_scan.txt):
         //
-        //   *(SkyrimSE+0x2f26a70) -> ptr to a struct
+        //   *(SkyrimSE+0x2f26670) -> ptr to a struct
         //     [+0x08] -> array of element-pointers (size unknown; only
         //                index 0 is observed used from Main::Update)
         //
@@ -988,7 +995,7 @@ namespace FreezeLogger::Snapshot::MainWaitProbe {
         a_os << "         Skyrim's job-pool wait — \"are there outstanding\n";
         a_os << "         tasks? if yes, block until they drain\" — identified\n";
         a_os << "         by the Faster HDT-SMP-UP maintainer (case-study 27,\n";
-        a_os << "         response of 2026-05-28). Singleton-B @ SkyrimSE+0x2f26a70\n";
+        a_os << "         response of 2026-05-28). Singleton-B @ SkyrimSE+0x2f26670\n";
         a_os << "         is the task-pool holder; the wrapper walks\n";
         a_os << "         (*S)[+8][idx0]->vtable[idx1] and tail-jumps to\n";
         a_os << "         KERNEL32!WaitForSingleObject. Main::Update calls\n";
@@ -1229,10 +1236,10 @@ namespace FreezeLogger::Snapshot::MainWaitProbe {
         SingletonBChain bChain{};
         bool bChainOk = false;
         if (inSiteB) {
-            a_os << "\n  Site-B probe (Singleton-B @ SkyrimSE+0x2f26a70):\n";
+            a_os << "\n  Site-B probe (Singleton-B @ SkyrimSE+0x2f26670):\n";
             bChain = WalkSingletonB(base);
             a_os << std::format(
-                "    *(SkyrimSE+0x2f26a70):               0x{:016x}\n",
+                "    *(SkyrimSE+0x2f26670):               0x{:016x}\n",
                 bChain.global_ptr);
             a_os << std::format(
                 "    sub-array @ +0x08:                   0x{:016x}\n",

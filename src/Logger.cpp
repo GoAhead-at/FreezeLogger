@@ -18,7 +18,7 @@ namespace {
 
 namespace FreezeLogger::Logger {
 
-    void Init(std::string_view a_levelString) {
+    void Init(std::string_view a_levelString, bool a_truncate) {
         const auto logsDir = SKSE::log::log_directory();
         if (!logsDir) {
             return;
@@ -27,7 +27,7 @@ namespace FreezeLogger::Logger {
         const auto logPath = *logsDir / "FreezeLogger.log";
 
         auto sink   = std::make_shared<spdlog::sinks::basic_file_sink_mt>(
-            logPath.string(), /*truncate=*/true);
+            logPath.string(), /*truncate=*/a_truncate);
         auto logger = std::make_shared<spdlog::logger>("FreezeLogger", std::move(sink));
 
         const auto level = ParseLevel(a_levelString);

@@ -113,7 +113,10 @@ extern "C" __declspec(dllexport) bool SKSEPlugin_Load(const SKSE::LoadInterface*
         FL_VERSION_MAJOR, FL_VERSION_MINOR, FL_VERSION_PATCH);
 
     FreezeLogger::Config::Load();
-    FreezeLogger::Logger::Init(FreezeLogger::Config::Get().logging.level);
+    // Re-init to apply the configured level, but append (don't truncate) so
+    // the boot banner above and any config-load messages survive.
+    FreezeLogger::Logger::Init(FreezeLogger::Config::Get().logging.level,
+                               /*a_truncate=*/false);
 
     if (!VerifyRuntime()) {
         return false;

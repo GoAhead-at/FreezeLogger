@@ -67,7 +67,12 @@ namespace FreezeLogger::Reporter {
             a_os << "================================================================\n";
             a_os << "FreezeLogger v" << FL_VERSION_MAJOR << "." << FL_VERSION_MINOR << "." << FL_VERSION_PATCH << "\n";
             a_os << "Captured:        " << TimestampHuman() << "\n";
-            a_os << "Runtime:         Skyrim SE 1.5.97\n";
+            const auto  rtVer     = REL::Module::get().version();
+            const char* rtEdition =
+                REL::Module::IsVR() ? "VR" : (REL::Module::IsAE() ? "AE" : "SE");
+            a_os << "Runtime:         Skyrim " << rtEdition << " "
+                 << rtVer[0] << "." << rtVer[1] << "." << rtVer[2] << "."
+                 << rtVer[3] << "\n";
             if (a_manual) {
                 a_os << "Capture type:    MANUAL (test_mode capture_on_pause hotkey)\n";
                 a_os << "                 NOTE: triggered on demand; the game was NOT\n";
@@ -249,6 +254,10 @@ namespace FreezeLogger::Reporter {
     }
 
     void AnnotateLatestResolved(std::uint64_t a_resolvedAfterMs) {
+        // Same lock as CaptureImpl: g_lastReportPath and the report file are
+        // shared with the watchdog/hotkey capture paths, so reading the path
+        // and appending must not race a concurrent capture.
+        std::scoped_lock captureLock(g_captureMutex);
         if (g_lastReportPath.empty() || !std::filesystem::exists(g_lastReportPath)) {
             logs::warn("AnnotateLatestResolved: no prior report to annotate.");
             return;

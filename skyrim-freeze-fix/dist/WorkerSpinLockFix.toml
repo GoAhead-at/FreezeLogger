@@ -86,9 +86,9 @@ enabled = true
 # completion signal (SetEvent on the parked job handle) so the main
 # thread resumes. The job is already gone when this fires, so waking
 # main is equivalent to the signal that was lost (worst case a
-# one-frame glitch vs a permanent freeze). Enabling active mode also
-# installs a process-wide WaitForSingleObjectEx wrap (tightly filtered
-# to the main thread's job-wait) so the watchdog can obtain the handle.
+# one-frame glitch vs a permanent freeze). The wait handle is derived
+# from the job-pool chain at wait entry, inside the WaitForJobTask wrap
+# that detect-only already installs, so active mode adds no extra hooks.
 detect_only = true
 
 # How long the main thread must be parked in WaitForJobTask before the
