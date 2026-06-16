@@ -7,11 +7,13 @@
 # config file should be installed alongside the DLL at the same path
 # but with the .toml extension.
 #
-# The plugin fixes two independent Skyrim hard-freeze classes:
+# The plugin fixes three independent Skyrim hard-freeze classes:
 #   * Layer 1 - Phase4Defer:   prevents the AB-BA BSSpinLock inversion
 #                              in the worker dispatcher.
 #   * Layer 2 - JobWaitBreaker: recovers the main thread from the
 #                              WaitForJobTask lost-wakeup hang.
+#   * Layer 3 - SiteABreaker:   recovers the main thread from the
+#                              Site-A (id 34554) worker-ack deadlock.
 
 [plugin]
 # Master kill-switch. If false, the plugin loads but installs nothing.
@@ -20,7 +22,7 @@ enabled = true
 
 [log]
 # How often the plugin emits a one-line counter dump (Phase4Defer +
-# JobWaitBreaker counters). 0 disables the periodic dump entirely.
+# JobWaitBreaker + SiteABreaker counters). 0 disables the periodic dump.
 stats_interval_s = 60
 
 [phase4_defer]
@@ -105,6 +107,65 @@ poll_interval_ms = 1000
 # This is the main safety knob: a long-but-progressing job mutates its
 # counters within the window and is left alone, so raise this value to
 # make the breaker more conservative.
+recheck_window_ms = 1500
+
+# Verbose per-decision logging for the watchdog. Default: false.
+diagnostic_logging = false
+
+[site_a_breaker]
+# Layer 3: recovery for the Skyrim main-thread Site-A worker-ack
+# deadlock (the third freeze class, documented in
+# docs/case-study/29-siteabreaker-plan.md). Main::Update has a SECOND
+# infinite-wait site -- the id 34554 helper, reached via id 35565 and
+# driven by Faster HDT-SMP's per-frame parallel-cloth dispatch. The
+# caller publishes work into Singleton-A (sets pending=1, wakes a worker
+# via the auto-reset worker-wake event), then blocks INFINITE on the
+# manual-reset worker-ack event until the worker signals completion.
+# When a worker consumes the wake, takes the job, and never signals the
+# ack, main sleeps forever. Observed on HDT-SMP 3.1.0.0 AND 3.2.0.0
+# (freeze_2026-06-16_133223 and _152328), so it is independent of the
+# HDT-SMP version -- downgrading HDT-SMP does NOT fix it.
+#
+# This module wraps id 34554 (located by a version-independent .text
+# body signature, with the Singleton-A slot derived from its rip-relative
+# load) to mark when main entered a Site-A wait and capture the worker-ack
+# HANDLE at entry; a watchdog thread confirms the deadlock and recovers
+# the engine. The wait is judged stuck when main has been parked in the
+# SAME Site-A episode past `dwell_threshold_ms` AND is still parked after
+# `recheck_window_ms` (zero progress: pending still 1, work-id + ack
+# handle unchanged, ack event still NOT signaled). A Site-A wait that is
+# going to complete clears pending well inside the window and is left
+# alone.
+
+# Master switch for the module.
+enabled = true
+
+# Detect-only (DEFAULT). When the deadlock signature is seen, the module
+# LOGS it but does NOT change engine behaviour. This is the safe
+# observation mode shipped while the release path is field-validated: it
+# confirms the module fires exactly when (and only when) a real Site-A
+# worker-ack deadlock occurs.
+#
+# Set to false to ACTIVELY recover: the watchdog delivers the missing
+# completion signal (SetEvent on the captured worker-ack handle) so the
+# main thread resumes. The worker is provably not progressing when this
+# fires, so waking main is equivalent to the ack that was lost (worst
+# case a one-frame cosmetic cloth glitch vs a permanent freeze).
+detect_only = true
+
+# How long the main thread must be parked in id 34554 before the module
+# treats it as a candidate stall (milliseconds). Far above any legitimate
+# Site-A wait during play, well below FreezeLogger's 15 s freeze watchdog.
+dwell_threshold_ms = 5000
+
+# Watchdog poll cadence (milliseconds).
+poll_interval_ms = 1000
+
+# Zero-progress confirmation window (milliseconds). After the dwell
+# threshold the watchdog samples Singleton-A, waits this long, and
+# re-samples; it only acts if main stayed in the SAME Site-A episode
+# (still parked, pending=1, work-id + ack handle unchanged) across the
+# window. Raise this value to make the breaker more conservative.
 recheck_window_ms = 1500
 
 # Verbose per-decision logging for the watchdog. Default: false.

@@ -16,6 +16,9 @@ namespace WorkerSpinLockFix::Hooks {
     //   3. JobWaitBreaker::Install()  — Layer 2: recovery for the Skyrim
     //                                   main-thread WaitForJobTask
     //                                   lost-wakeup hang (case-study 28).
+    //   4. SiteABreaker::Install()    — Layer 3: recovery for the Skyrim
+    //                                   main-thread Site-A worker-ack
+    //                                   deadlock (id 34554, case-study 29).
     //
     // Each layer is independently config-gated and best-effort. Returns
     // true if at least one layer armed.

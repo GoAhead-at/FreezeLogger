@@ -46,8 +46,27 @@ The plugin's two current layers:
    delivers the missing signal via `SetEvent`. No process-wide hook is
    used. See §3.7 and
    [`../../docs/case-study/28-jobwaitbreaker-design.md`](../../docs/case-study/28-jobwaitbreaker-design.md).
+3. **Layer 3 - Site-A worker-ack deadlock recovery (`SiteABreaker`,
+   new in v2.4.0).** A *third* engine freeze class (case-study 29):
+   `Main::Update` has a second infinite-wait site, the `id 34554` helper
+   (reached via `id 35565`, driven by Faster HDT-SMP's per-frame parallel
+   dispatch). It publishes work into Singleton-A (`pending=1`, wakes a
+   worker via the auto-reset worker-wake event) then blocks `INFINITE` on
+   the manual-reset worker-ack event `[+0x60]` for the worker to signal
+   completion. When a worker consumes the wake but never signals the ack,
+   main sleeps forever. Observed on HDT-SMP 3.1.0.0 *and* 3.2.0.0
+   (`freeze_2026-06-16_133223`, `freeze_2026-06-16_152328`), so it is
+   independent of the HDT-SMP version. An inline wrap on `id 34554`
+   (located by an independent `.text` body signature, with the Singleton-A
+   slot derived from its rip-relative load) marks when main entered a
+   Site-A wait and captures the worker-ack handle at entry; a watchdog
+   confirms the deadlock (parked in the same episode past a dwell
+   threshold with `pending=1`, work-id + ack handle unchanged, and the ack
+   event still unsignalled across a confirmation window) and, in active
+   mode, delivers the missing signal via `SetEvent`. See §3.8 and
+   [`../../docs/case-study/29-siteabreaker-plan.md`](../../docs/case-study/29-siteabreaker-plan.md).
 
-The two layers are fully independent: they target different bugs, hook
+The three layers are fully independent: they target different bugs, hook
 different functions, and share no state.
 
 For the engine bug being fixed see
@@ -623,6 +642,55 @@ Defaults: `enabled=true`, `dwell_threshold_ms=5000`,
 changes within it is treated as live). The module never suspends an
 engine thread or reads a thread context -- a deliberate contrast with
 the retired reaper (§3.5), and it installs no process-wide hook.
+
+### 3.8. `SiteABreaker` (v2.4.0, current)
+
+The Layer 3 module. It targets the **third** freeze class -- the Skyrim
+main-thread **Site-A worker-ack deadlock** (`id 34554` / Singleton-A) --
+distinct from both the AB-BA spinlock bug (Layer 1) and the
+`WaitForJobTask` lost-wakeup hang (Layer 2). Full design and evidence:
+[`../../docs/case-study/29-siteabreaker-plan.md`](../../docs/case-study/29-siteabreaker-plan.md).
+
+**Anchoring.** `SkyrimAnchors` gained a second, independent body-signature
+scan for the `id 34554` helper: it matches the distinctive
+`cmp [rbx+0x6c],1` / `mov rcx,[rbx+0x60]` / `mov [rbx+0x68],0` body,
+derives the Singleton-A slot from the `mov rbx,[rip+disp]` load in the 7
+bytes immediately before it, and walks the `push rbx; sub rsp,0x20`
+prologue backward to find the function entry. It is resolved separately
+from the Site-B anchor, so either can arm without the other
+(`AvailableSiteA()` gates this module).
+
+**`SiteABreaker`** has three pieces, mirroring `JobWaitBreaker`:
+
+1. **`id 34554` inline wrap.** On the main thread (pinned on first call),
+   the outermost entry reads Singleton-A (SEH-guarded) and -- only if a
+   wait is actually scheduled (`pending [+0x6c]==1` with a non-null
+   worker-ack handle `[+0x60]`) -- opens an episode: it captures the ack
+   handle and work-id, records the start time, bumps an episode sequence,
+   and sets the in-wait flag. The matching exit clears the flag. A
+   `thread_local` depth counter keeps nested calls in one episode, and the
+   first four integer registers + the return value are forwarded verbatim
+   so the wrap is transparent. `unsafe_call` (no mutex) is used because the
+   helper blocks `INFINITE` inside.
+2. **Watchdog thread.** Polls at `poll_interval_ms`. When main has been
+   parked in the same episode longer than `dwell_threshold_ms`, it samples
+   Singleton-A, waits `recheck_window_ms`, and re-samples. Unlike Site-B
+   there are no decrementing counters -- the wait is binary -- so "zero
+   progress" is: still the same episode (sequence unchanged + still
+   parked), `pending` still 1, and the work-id + ack handle unchanged. A
+   wait that is going to complete clears `pending` and ends the episode
+   well inside the window. As a final guard it reads the worker-ack event
+   state via `NtQueryEvent` and stands down if it just got signalled (main
+   is already waking).
+3. **Release (active mode only).** `SetEvent` on the worker-ack handle
+   captured at entry. Because the worker is provably not progressing,
+   delivering the ack is equivalent to the completion signal that was lost.
+
+Defaults: `enabled=true`, `detect_only=true`, `dwell_threshold_ms=5000`,
+`recheck_window_ms=1500`. Like Layer 2 it never suspends an engine thread
+or reads a thread context and installs no process-wide hook; `id 34554`
+is main-only (the render thread uses a different Singleton-A pair,
+`id 34557/34567`), so the wrap never runs off the main thread.
 
 ---
 

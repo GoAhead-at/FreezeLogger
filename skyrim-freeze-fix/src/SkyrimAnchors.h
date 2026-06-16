@@ -49,6 +49,23 @@ namespace WorkerSpinLockFix::SkyrimAnchors {
         // RVAs (module-relative) for logging.
         std::uintptr_t waitForJobTaskRVA = 0;
         std::uintptr_t singletonBSlotRVA = 0;
+
+        // ----- Site-A (id 34554 worker-ack wait helper) -----------------
+        // The SECOND Main::Update infinite-wait site (case-study 29). It
+        // is a separate, smaller function from WaitForJobTask: it loads a
+        // singleton (Singleton-A) from a rip-relative slot, and -- when
+        // that singleton's pending flag [+0x6c]==1 -- waits INFINITE on the
+        // worker-ack event [+0x60] for a worker to signal completion. The
+        // freeze is the case where the worker consumes the wake but never
+        // signals the ack, so main sleeps forever. The SiteABreaker wraps
+        // this function. Resolved by an independent body signature scan, so
+        // a missing/mismatched Site-A leaves the SiteABreaker idle without
+        // affecting the WaitForJobTask (Site-B) resolution above.
+        bool           siteAResolved     = false;
+        std::uintptr_t siteALockFn       = 0;  // id 34554 entry (to wrap)
+        std::uintptr_t singletonASlot    = 0;  // address of the global ptr slot
+        std::uintptr_t siteALockFnRVA    = 0;
+        std::uintptr_t singletonASlotRVA = 0;
     };
 
     // Resolve once (idempotent). Safe to call from SKSEPlugin_Load onward.
@@ -60,7 +77,14 @@ namespace WorkerSpinLockFix::SkyrimAnchors {
     // non-null Singleton-B slot. The JobWaitBreaker gates on this.
     [[nodiscard]] bool Available() noexcept;
 
-    // Human-readable one-liner for logs.
+    // True iff the Site-A signature scan found id 34554 AND derived a
+    // non-null Singleton-A slot. The SiteABreaker gates on this.
+    [[nodiscard]] bool AvailableSiteA() noexcept;
+
+    // Human-readable one-liner for logs (Site-B / WaitForJobTask).
     [[nodiscard]] const char* DiagnosticString();
+
+    // Human-readable one-liner for logs (Site-A / id 34554).
+    [[nodiscard]] const char* DiagnosticStringSiteA();
 
 }

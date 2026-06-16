@@ -4,6 +4,7 @@
 #include "Config.h"
 #include "JobWaitBreaker.h"
 #include "Phase4Defer.h"
+#include "SiteABreaker.h"
 #include "SkyrimAnchors.h"
 
 namespace WorkerSpinLockFix::Hooks {
@@ -44,13 +45,27 @@ namespace WorkerSpinLockFix::Hooks {
                 "(job_wait_breaker.enabled = false).");
         }
 
+        // ---- Layer 3: Site-A worker-ack deadlock recovery ---------------
+        bool sab_active = false;
+        if (cfg.sab_enabled) {
+            if (SiteABreaker::Install()) {
+                sab_active = true;
+            }
+        } else {
+            logs::info(
+                "[SiteABreaker] disabled by config "
+                "(site_a_breaker.enabled = false).");
+        }
+
         logs::info(
             "WorkerSpinLockFix armed. phase4_active={} (AB-BA spinlock "
             "prevention), job_wait_breaker_active={} (WaitForJobTask "
-            "lost-wakeup recovery, detect_only={}).",
-            phase4_active, jwb_active, cfg.jwb_detect_only);
+            "lost-wakeup recovery, detect_only={}), site_a_breaker_active={} "
+            "(Site-A worker-ack deadlock recovery, detect_only={}).",
+            phase4_active, jwb_active, cfg.jwb_detect_only,
+            sab_active, cfg.sab_detect_only);
 
-        return phase4_active || jwb_active;
+        return phase4_active || jwb_active || sab_active;
     }
 
 }

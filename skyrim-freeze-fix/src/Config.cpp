@@ -77,13 +77,33 @@ namespace WorkerSpinLockFix::Config {
                 tbl["job_wait_breaker"]["diagnostic_logging"].value_or(
                     g_settings.jwb_diagnostic_logging);
 
+            g_settings.sab_enabled =
+                tbl["site_a_breaker"]["enabled"].value_or(g_settings.sab_enabled);
+            g_settings.sab_detect_only =
+                tbl["site_a_breaker"]["detect_only"].value_or(g_settings.sab_detect_only);
+            g_settings.sab_dwell_threshold_ms = static_cast<std::uint32_t>(
+                tbl["site_a_breaker"]["dwell_threshold_ms"].value_or<std::int64_t>(
+                    g_settings.sab_dwell_threshold_ms));
+            g_settings.sab_poll_interval_ms = static_cast<std::uint32_t>(
+                tbl["site_a_breaker"]["poll_interval_ms"].value_or<std::int64_t>(
+                    g_settings.sab_poll_interval_ms));
+            g_settings.sab_recheck_window_ms = static_cast<std::uint32_t>(
+                tbl["site_a_breaker"]["recheck_window_ms"].value_or<std::int64_t>(
+                    g_settings.sab_recheck_window_ms));
+            g_settings.sab_diagnostic_logging =
+                tbl["site_a_breaker"]["diagnostic_logging"].value_or(
+                    g_settings.sab_diagnostic_logging);
+
             logs::info(
                 "Config loaded from {}: enabled={}, stats_interval_s={}, "
                 "phase4_defer_enabled={}, "
                 "phase4_defer_diagnostic_logging={}, "
                 "jwb_enabled={}, jwb_detect_only={}, "
                 "jwb_dwell_threshold_ms={}, jwb_poll_interval_ms={}, "
-                "jwb_recheck_window_ms={}, jwb_diagnostic_logging={}",
+                "jwb_recheck_window_ms={}, jwb_diagnostic_logging={}, "
+                "sab_enabled={}, sab_detect_only={}, "
+                "sab_dwell_threshold_ms={}, sab_poll_interval_ms={}, "
+                "sab_recheck_window_ms={}, sab_diagnostic_logging={}",
                 path.string(),
                 g_settings.enabled,
                 g_settings.stats_interval_s,
@@ -94,7 +114,13 @@ namespace WorkerSpinLockFix::Config {
                 g_settings.jwb_dwell_threshold_ms,
                 g_settings.jwb_poll_interval_ms,
                 g_settings.jwb_recheck_window_ms,
-                g_settings.jwb_diagnostic_logging);
+                g_settings.jwb_diagnostic_logging,
+                g_settings.sab_enabled,
+                g_settings.sab_detect_only,
+                g_settings.sab_dwell_threshold_ms,
+                g_settings.sab_poll_interval_ms,
+                g_settings.sab_recheck_window_ms,
+                g_settings.sab_diagnostic_logging);
         }
         catch (const toml::parse_error& e) {
             logs::warn("Config parse error at {}: {} - using built-in defaults.",

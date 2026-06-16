@@ -1,6 +1,6 @@
 # WorkerSpinLockFix
 
-SKSE plugin for **Skyrim SE 1.5.97 and AE 1.6.x** that fixes **two
+SKSE plugin for **Skyrim SE 1.5.97 and AE 1.6.x** that fixes **three
 distinct engine hard-freeze classes**:
 
 1. **The AB-BA spinlock inversion** in the engine's worker dispatcher
@@ -9,18 +9,21 @@ distinct engine hard-freeze classes**:
 2. **The `WaitForJobTask` lost-wakeup hang** — where `Main::Update`
    parks on a job-completion event that a producer tore down without
    signalling — recovered by **`JobWaitBreaker`** (new in v2.3.0).
+3. **The Site-A worker-ack deadlock** — where `Main::Update` parks in
+   the `id 34554` helper on a worker-ack event that a worker consumed
+   the wake for but never signalled — recovered by **`SiteABreaker`**
+   (new in v2.4.0).
 
 A single DLL installs on both SE 1.5.97 and AE 1.6.x (VR is refused).
 See [Multi-version support](#multi-version-support) for the SE↔AE map.
 
-**v2.3.0** is the current release. It adds the `JobWaitBreaker` layer
-and **removes** the v1.0 runtime breaker (`AcquireHook` + `WaitGraph` +
-`Breaker`), its stale-owner reaper, and the synthetic test harness:
-field telemetry showed `Phase4Defer` prevents the AB-BA cycle outright
+**v2.4.0** is the current release. It adds the `SiteABreaker` layer
+(Layer 3). v2.3.0 added `JobWaitBreaker` and **removed** the v1.0
+runtime breaker (`AcquireHook` + `WaitGraph` + `Breaker`), its
+stale-owner reaper, and the synthetic test harness: field telemetry
+showed `Phase4Defer` prevents the AB-BA cycle outright
 (`cycles_observed=0` across long sessions), so the runtime breaker
-never fired and was redundant. The reaper (only useful for a
-*dead-owner* orphaned lock, which does not occur for this live-thread
-bug) and the test harness went with it. The plugin is now two focused,
+never fired and was redundant. The plugin is now three focused,
 independent fixes that share no state.
 
 ### Version history
@@ -31,11 +34,12 @@ independent fixes that share no state.
 | v2.0.0–v2.0.3 | 2026-05-22 → 24, superseded | Added the structural fix (`Phase4Defer`) as the primary layer; fixed a 6-arg skyshard regression; rebased the LockB gates onto two surgical `Trampoline::write_call<5>` call-site patches; redesigned the reaper around `WaitGraph::SnapshotEdges`. See case-studies 22–26. |
 | v2.1.0 | Released 2026-06-03, superseded | Moved the runtime detector onto a `safetyhook` mid-hook at `id 12210 +0x8a` (the backoff retry point) so uncontended/recursive acquires ran native with zero added cost — removing hot-path overhead that stacked under framerate-amplifying mods (e.g. PureDark's upscaler). |
 | v2.2.0 | Released, superseded | **Anniversary Edition (1.6.x) support.** All engine targets re-derived structurally against the unpacked AE 1.6.1170 binary (byte signatures do not survive AE's recompile), wired in as `REL::RelocationID{se, ae}` pairs with runtime-selected lock RVAs, call-site offsets, and the `+0xe0 → +0xe8` Actor-flags shift. See [Multi-version support](#multi-version-support). |
-| v2.3.0 | **Current.** | Adds **`JobWaitBreaker`** — recovery for the Skyrim `WaitForJobTask` lost-wakeup hang (case-study 27/28), a freeze class unrelated to the spinlock bug. Wraps `WaitForJobTask` (located by a version-independent `.text` body signature via `SkyrimAnchors`); a watchdog detects the lost-wakeup signature and, in active mode, delivers the missing signal via `SetEvent`. Ships **detect-only** by default. **Removes** the v1.0 runtime breaker, the reaper, and the test harness (`Phase4Defer` made them redundant). |
+| v2.3.0 | Superseded | Adds **`JobWaitBreaker`** — recovery for the Skyrim `WaitForJobTask` lost-wakeup hang (case-study 27/28), a freeze class unrelated to the spinlock bug. Wraps `WaitForJobTask` (located by a version-independent `.text` body signature via `SkyrimAnchors`); a watchdog detects the lost-wakeup signature and, in active mode, delivers the missing signal via `SetEvent`. Ships **detect-only** by default. **Removes** the v1.0 runtime breaker, the reaper, and the test harness (`Phase4Defer` made them redundant). |
+| v2.4.0 | **Current.** | Adds **`SiteABreaker`** — recovery for the Skyrim Site-A worker-ack deadlock (case-study 29): `Main::Update` parks in the `id 34554` helper on Singleton-A's manual-reset worker-ack event after a worker consumed the wake but never signalled completion (driven by Faster HDT-SMP's per-frame dispatch via `id 35565`; observed on HDT-SMP 3.1.0.0 *and* 3.2.0.0, so version-independent). Wraps `id 34554` (located by an independent `.text` body signature via `SkyrimAnchors`) and captures the worker-ack handle at entry; a watchdog confirms the deadlock signature and, in active mode, delivers the missing signal via `SetEvent`. Ships **detect-only** by default. |
 
 ## Scope
 
-This plugin addresses **two** documented engine freeze classes:
+This plugin addresses **three** documented engine freeze classes:
 
 1. The **AB-BA inversion** between two specific `BSSpinLock` globals
    (LockA at `SkyrimSE+0x2eff8e0`, LockB at `SkyrimSE+0x2f3b8e8`)
@@ -46,6 +50,13 @@ This plugin addresses **two** documented engine freeze classes:
    freeze class previously seen with HDT-SMP on main's stack (the
    FSMP frame is just the `Main::Update` hook trampoline, not the
    cause). See case-study 27/28.
+3. The **Site-A worker-ack deadlock** where `Main::Update` parks
+   forever in the `id 34554` helper on Singleton-A's manual-reset
+   worker-ack event after a worker consumed the wake but never
+   signalled completion (driven by Faster HDT-SMP's per-frame
+   parallel dispatch via `id 35565`; observed on HDT-SMP 3.1.0.0 and
+   3.2.0.0, so version-independent) — recovered by `SiteABreaker`.
+   See case-study 29.
 
 It does **not** address:
 
@@ -87,7 +98,7 @@ the game freezes. The race is rare per-session but cumulative on long
 play and was reproduced in nine independent freeze captures with
 `FreezeLogger`.
 
-The plugin runs two independent layers, each targeting a different
+The plugin runs three independent layers, each targeting a different
 freeze class.
 
 ### Layer 1 - AB-BA spinlock prevention (`Phase4Defer`)
@@ -163,6 +174,47 @@ true`): it logs the lost-wakeup signature but changes nothing, so the
 trigger can be field-validated against real captures before the
 `SetEvent` path is enabled. The module never suspends an engine thread
 or reads a thread context.
+
+### Layer 3 - Site-A worker-ack deadlock recovery (`SiteABreaker`, v2.4.0)
+
+A **third** engine freeze, distinct from both above. `Main::Update` has
+a second infinite-wait site — the `id 34554` helper, reached via
+`id 35565` and driven by Faster HDT-SMP's per-frame parallel-cloth
+dispatch. It publishes work into Singleton-A (`pending=1`, wakes a
+worker via the auto-reset worker-wake event), then blocks `INFINITE` on
+the manual-reset worker-ack event `[singleton+0x60]` until the worker
+signals completion. When a worker consumes the wake, takes the job, and
+never signals the ack, main sleeps forever. Two field captures show the
+exact state on **different HDT-SMP versions** (3.2.0.0 and 3.1.0.0), so
+it is independent of the HDT-SMP version — downgrading HDT-SMP does not
+fix it. (See case-study 29.)
+
+`SiteABreaker` has three pieces, mirroring `JobWaitBreaker`:
+
+1. **`id 34554` inline wrap.** Resolved version-independently by
+   `SkyrimAnchors` (an independent `.text` body-signature scan that also
+   derives the Singleton-A slot from the `mov rbx,[rip]` load). On the
+   main thread it opens an episode only when a wait is actually scheduled
+   (`pending=1`) and captures the worker-ack handle at entry.
+2. **Watchdog thread.** When main has been parked in the same Site-A
+   episode longer than `dwell_threshold_ms` and is still parked after a
+   `recheck_window_ms` re-check with zero progress (`pending` still 1,
+   work-id + ack handle unchanged, ack event still unsignalled), that is
+   the deadlock signature. A wait that is going to complete clears
+   `pending` inside the window and is left alone.
+3. **Release (active mode only).** Delivers the missing signal via
+   `SetEvent` on the captured worker-ack handle so main resumes. The
+   worker is provably not progressing, so this is equivalent to the ack
+   that was lost (worst case a one-frame cosmetic cloth glitch vs a
+   permanent freeze).
+
+It **ships detect-only by default** (`[site_a_breaker] detect_only =
+true`). `id 34554` is main-only (the render thread uses a different
+Singleton-A pair, `id 34557/34567`), so the wrap never runs off the main
+thread. Like Layer 2 it never suspends an engine thread or reads a
+thread context. **Note:** the Site-A anchors are located by signature
+scan with no AE validation yet, so on AE the module simply does not arm
+(fail-safe) until the signature is confirmed there.
 
 ## Multi-version support
 

@@ -78,6 +78,42 @@ namespace WorkerSpinLockFix::Config {
 
         // Verbose per-decision logging for the watchdog.
         bool jwb_diagnostic_logging{ false };
+
+        // ---- SiteABreaker (Site-A worker-ack deadlock recovery) ------------
+        //
+        // Recovers the engine from the Skyrim main-thread Site-A worker-ack
+        // deadlock (case-study 29): Main::Update parks in id 34554 on a
+        // worker-ack event that a worker consumed-the-wake-but-never-signaled,
+        // so the game freezes. Distinct from the WaitForJobTask hang above.
+        // See SiteABreaker.h for the mechanism.
+
+        // Master switch for the module.
+        bool sab_enabled{ true };
+
+        // Detect-only (default): when the deadlock signature is seen, log it
+        // but do NOT alter engine behaviour. Set to false to actually release
+        // main (SetEvent on the captured worker-ack handle). Ships true until
+        // the release path is field-validated.
+        bool sab_detect_only{ true };
+
+        // How long main must be parked in id 34554 before the module
+        // considers it stuck. Far above any legitimate Site-A wait during
+        // play, well below the FreezeLogger 15 s watchdog.
+        std::uint32_t sab_dwell_threshold_ms{ 5000 };
+
+        // Watchdog poll cadence.
+        std::uint32_t sab_poll_interval_ms{ 1000 };
+
+        // Zero-progress confirmation window. After the dwell threshold the
+        // watchdog samples Singleton-A, waits this long, and re-samples; it
+        // only acts if main stayed in the SAME Site-A episode (still parked,
+        // pending=1, work-id + ack handle unchanged) across the window. A
+        // wait that is going to complete clears pending inside this window
+        // and is left alone, so raising this value is more conservative.
+        std::uint32_t sab_recheck_window_ms{ 1500 };
+
+        // Verbose per-decision logging for the watchdog.
+        bool sab_diagnostic_logging{ false };
     };
 
     void Init();

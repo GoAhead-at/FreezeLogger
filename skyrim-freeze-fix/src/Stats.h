@@ -22,6 +22,14 @@ namespace WorkerSpinLockFix::Stats {
     // Active mode delivered the missing signal (SetEvent) to release main.
     void OnJobWaitReleased() noexcept;
 
+    // ---- SiteABreaker (Site-A worker-ack deadlock recovery) ------------
+    // The worker-ack deadlock signature was confirmed (main parked in
+    // id 34554 past the dwell threshold with zero progress, worker-ack
+    // never signaled).
+    void OnSiteAStuck() noexcept;
+    // Active mode delivered the missing signal (SetEvent) to release main.
+    void OnSiteAReleased() noexcept;
+
     void StartPeriodicDump();
     void Stop();
 

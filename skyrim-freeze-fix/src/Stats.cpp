@@ -15,6 +15,10 @@ namespace WorkerSpinLockFix::Stats {
         std::atomic<std::uint64_t> g_jw_stuck{ 0 };
         std::atomic<std::uint64_t> g_jw_released{ 0 };
 
+        // SiteABreaker
+        std::atomic<std::uint64_t> g_sa_stuck{ 0 };
+        std::atomic<std::uint64_t> g_sa_released{ 0 };
+
         std::thread       g_dump_thread;
         std::atomic<bool> g_running{ false };
         std::atomic<bool> g_started{ false };
@@ -22,12 +26,15 @@ namespace WorkerSpinLockFix::Stats {
         void DumpOnce() {
             logs::info(
                 "stats: phase4: queued={} drained={} passthrough={} | "
-                "job_wait: stuck={} released={}",
+                "job_wait: stuck={} released={} | "
+                "site_a: stuck={} released={}",
                 g_p4_queued.load(std::memory_order_relaxed),
                 g_p4_drained.load(std::memory_order_relaxed),
                 g_p4_passthrough.load(std::memory_order_relaxed),
                 g_jw_stuck.load(std::memory_order_relaxed),
-                g_jw_released.load(std::memory_order_relaxed));
+                g_jw_released.load(std::memory_order_relaxed),
+                g_sa_stuck.load(std::memory_order_relaxed),
+                g_sa_released.load(std::memory_order_relaxed));
         }
 
         void DumpLoop(std::chrono::seconds interval) {
@@ -57,6 +64,13 @@ namespace WorkerSpinLockFix::Stats {
     }
     void OnJobWaitReleased() noexcept {
         g_jw_released.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    void OnSiteAStuck() noexcept {
+        g_sa_stuck.fetch_add(1, std::memory_order_relaxed);
+    }
+    void OnSiteAReleased() noexcept {
+        g_sa_released.fetch_add(1, std::memory_order_relaxed);
     }
 
     void StartPeriodicDump() {
