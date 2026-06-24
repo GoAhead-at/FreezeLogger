@@ -175,10 +175,46 @@ derived, same as the v2.3.0 JWB rework).
 
 ---
 
-## 6. Open questions
+## 6. Render-side Site-A (`id 34557/34567`) — implemented in v2.5.0
+
+`freeze_2026-06-24_053440` (FreezeLogger v0.7.0) closed this follow-up: it
+captured the **render-side** counterpart of the main-side deadlock, which the
+classifier had been reporting as "Unrecognised". The render thread was parked
+inside `id 34557` (frames `id 34557+0x7d` / `id 34567+0x86`, RBP = the
+Singleton-A instance `module+0x2f26680`) while main spun on a heap `BSSpinLock`
+held by the same stalled HDT-SMP worker pool ("0 idle").
+
+Disassembly of the render path (against the unpacked SE 1.5.97 binary):
+
+- `id 34567` (`0x576cd0`) is the render worker loop. It waits `INFINITE` on
+  the worker-wake `[+0x58]`, then per work item calls `id 34557`, then signals
+  the worker-ack `[+0x60]` — i.e. it reads the **same** Singleton-A field
+  layout as main's `id 34554` (`[+0x58]`/`[+0x60]`/`[+0x6c]`).
+- `id 34557` (`0x576700`) is the per-task cloth-join. It iterates the
+  dispatched sub-tasks and waits `INFINITE` on each one's completion (the
+  innermost wait, reached via a virtual call at `+0x7b`/`+0x7d`). When a
+  sub-task worker is stuck, the render thread parks here forever and the loop
+  never reaches the `[+0x60]` ack `SetEvent`.
+
+**FreezeLogger v0.9.0** now resolves `id 34557` by a byte-unique entry
+signature and reports the render-side Site-A class (`RenderSiteAWorkerAck`)
+plus a render-side characterization block in `MainWaitProbe` (render context +
+Singleton-A field/ack readback).
+
+**WorkerSpinLockFix v2.5.0** adds Layer 4 (`SiteARenderBreaker`): an inline
+wrap on `id 34557` capturing the Singleton-A from `rcx` and the worker-ack
+`[+0x60]` at entry, with the same dwell + zero-progress watchdog as Layer 3.
+In active mode it `SetEvent`s the worker-ack to publish the completion the
+stuck join would have raised. It ships `detect_only=true` until the release
+path is validated against a FreezeLogger v0.9.0 render-side capture, because
+the ack publishes completion to the waiter rather than unblocking the deepest
+per-sub-task wait inside `id 34557`.
+
+## 7. Open questions
 - AE anchoring for `id 34554` / `id 35565` / Singleton-A (RelocationID vs
-  body signature). SE 1.5.97 is confirmed by both captures.
-- Should the breaker also guard the **render-side** Site-A pair
-  (`id 34557/34567`)? 133223 had render stuck too. Possibly a follow-up.
+  body signature). SE 1.5.97 is confirmed by all captures. (`id 34557` resolves
+  by the same kind of `.text` signature and is expected to port the same way.)
 - Is there an upstream root cause (worker thread death / HDT-SMP dispatch
   bug) worth reporting to the FSMP maintainer, independent of the breaker?
+  The "0 idle" worker pool behind both the main-side and render-side variants
+  points at a single stuck/exited HDT-SMP worker as the common producer.
