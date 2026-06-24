@@ -4,8 +4,8 @@
 **Type:** SKSE64 native DLL plugin
 **Language:** C++20
 **Target runtime:** Skyrim SE **>= 1.5.97** and **AE (1.6.x)**; VR recognised but deferred
-**Engine binding:** CommonLibSSE-NG. Deep Site-B anchors are resolved at runtime by signature scan (`SkyrimAnchors`), so multi-runtime support is no longer a per-version RVA port.
-**Status:** Draft v0.7 (multi-runtime: SE 1.5.97 + AE via runtime-anchored Site-B probe; Site-A and long-form audit gate to SE 1.5.97 until signatured; VR deferred)
+**Engine binding:** CommonLibSSE-NG. All deep-audit anchors (Site-A lock primitive + Singleton-A, Site-B WaitForJobTask + Singleton-B, the Main::Update return addresses, and the BSSpinLock spin-retry site) are resolved at runtime by signature scan (`SkyrimAnchors`), so multi-runtime support is no longer a per-version RVA port.
+**Status:** Draft v0.8 (multi-runtime: SE 1.5.97 + AE 1.6.1170 with the full long-form audit — Site-A, Site-B, and BSSpinLock — runtime-anchored on both; VR deferred)
 
 ---
 
@@ -824,11 +824,23 @@ packaging script in-repo so the muscle memory exists when we do.
   prologue's rip-relative load. Verified offline against unpacked SE 1.5.97
   (`+0xc38130` → `+0x2f26670`) and AE 1.6.1170 (`+0xcfd410` → `+0x31771d8`).
   This also fixed a latent `+0x400` slip (the old `+0x2f26a70` constant).
-- **Site-A / long-form audit on AE — DEFERRED.** The lock primitive
-  (id 34554), the `BSSpinLock` spin-retry site, and the Main::Update
-  return-address corroboration are still hard SE-1.5.97 RVAs and have no AE
-  signatures yet. Those sub-probes self-disable off SE 1.5.97. Signaturing
-  them (same technique as `SkyrimAnchors`) is the next multi-runtime step.
+- **Site-A / long-form audit on AE — RESOLVED, runtime-anchored (v0.8).**
+  `SkyrimAnchors` now scans `.text` for a version-stable Site-A body
+  signature (`test rbx,rbx / je / cmp [rbx+0x6c],1 / jne / mov rcx,[rbx+0x60]`
+  — byte-identical on SE 1.5.97 and AE 1.6.1170; only the INFINITE setup
+  differs, `or edx,-1` vs `mov edx,-1`, which sits outside the anchor). From a
+  match it derives Singleton-A (the `mov rbx,[rip]` prologue), the lock-return
+  RIP (the instruction after the `WaitForSingleObjectEx` call), the unique
+  `Main::Update → Site-A` call site (which also pins the Site-A Main::Update
+  return), and the Site-B `Main::Update` returns (the `WaitForJobTask` calls
+  within ±0x1000 of the Site-A call). The `BSSpinLock` spin-retry site is
+  signatured separately (1 site on SE, 2 on AE — both collected). Verified
+  offline against the unpacked binaries (`analysis/ae_siteA.py`): SE resolves
+  to the previously hard-coded constants (`+0x5765d0`/`+0x2f26668`/`+0x5765ff`/
+  `+0x5b34fe`/`+0x132c5a`) and AE to `+0x5fc210`/`+0x31771d0`/`+0x5fc241`/
+  `{+0x64618c,+0x646758}`/`{+0x194a2a,+0x1af85a}`. `MainWaitProbe::Write` no
+  longer gates on SE 1.5.97; each sub-probe self-disables only if its own
+  anchor was not resolved. VR remains deferred (refused at load).
 - **Papyrus log interception mechanism**: prefer registering as a
   `BSScript::ILogEventSink` if CommonLibSSE-NG exposes it; otherwise hook
   `BSScript::Internal::VirtualMachine::TraceStack`/log emission. Decide

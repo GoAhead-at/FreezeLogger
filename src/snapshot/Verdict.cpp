@@ -494,6 +494,39 @@ namespace FreezeLogger::Snapshot::Verdict {
             return out;
         }
 
+        // ----- Render-side Site-A join probe ----------------------------
+        // The render/worker thread, when stuck in the parallel cloth
+        // dispatch, parks inside the per-task join function (SE id 34557)
+        // waiting on a sub-task that never completes. We resolve id 34557 by
+        // signature (SkyrimAnchors) and test whether the render thread has a
+        // saved return address inside it. Version-independent (no SE-only
+        // RVA), so this runs on AE too whenever the signature resolves.
+        struct RenderSiteAState {
+            bool           inSiteA  = false;
+            std::uintptr_t frameRva = 0;
+        };
+
+        RenderSiteAState ProbeRenderSiteA(DWORD a_selfTid) noexcept {
+            RenderSiteAState s{};
+            if (!SkyrimAnchors::RenderSiteAAvailable()) return s;
+
+            const auto renderTid = static_cast<DWORD>(Heartbeat::RenderTid());
+            if (renderTid == 0 || renderTid == a_selfTid) return s;
+
+            const auto& a = SkyrimAnchors::Get();
+            const auto  t = SnapshotThreadCtx(renderTid);
+            if (!t.ok) return s;
+
+            std::uintptr_t hit = 0;
+            DWORD          seh = 0;
+            if (SawAddrInRange(t.rsp, a.renderTaskFn, a.renderTaskFnEnd,
+                               0x800, hit, seh)) {
+                s.inSiteA  = true;
+                s.frameRva = (a.moduleBase != 0) ? (hit - a.moduleBase) : hit;
+            }
+            return s;
+        }
+
         // ----- Top-level Observe orchestrator ---------------------------
         Observations Observe() noexcept {
             Observations obs;
@@ -578,6 +611,12 @@ namespace FreezeLogger::Snapshot::Verdict {
                 obs.spinlockOwnedByMain = spin.ownerIsMain;
             }
 
+            // 5. Render-side Site-A join (id 34557). Version-independent
+            //    (signature-resolved), so it runs regardless of seSite.
+            const auto render = ProbeRenderSiteA(selfTid);
+            obs.renderInSiteA      = render.inSiteA;
+            obs.renderTaskFrameRva = render.frameRva;
+
             return obs;
         }
 
@@ -652,6 +691,24 @@ namespace FreezeLogger::Snapshot::Verdict {
             };
         }
 
+        // 5. Render-side Site-A worker-ack join (id 34557). The render /
+        //    worker thread is parked in the per-task join waiting on a
+        //    dispatched cloth sub-task that never completes; main is often
+        //    stalled behind it (spinning on a heap BSSpinLock held by the
+        //    same stuck worker pool, or blocked on the render ack). This is
+        //    the render counterpart of the main-side Site-A deadlock and was
+        //    previously the leading "Unrecognised" shape. Confidence climbs
+        //    when a BSSpinLock spinner corroborates the main-side stall.
+        if (a_obs.renderInSiteA) {
+            return {
+                Class::RenderSiteAWorkerAck,
+                "Render-side Site-A worker-ack join (id 34557): render parked "
+                "joining a stuck cloth sub-task; main stalled behind it",
+                a_obs.spinlockSpinnerSeen ? "high" : "medium",
+                "docs/case-study/29-siteabreaker-plan.md",
+            };
+        }
+
         return {
             Class::Unrecognised,
             "Unrecognised — main is in a kernel wait we don't have a fingerprint for",
@@ -668,6 +725,7 @@ namespace FreezeLogger::Snapshot::Verdict {
             if (o.inSiteA && o.inSiteB) return "A+B (?)";
             if (o.inSiteA) return "A (Singleton-A id 34554 lock primitive)";
             if (o.inSiteB) return "B (Skyrim WaitForJobTask, runtime-anchored)";
+            if (o.renderInSiteA) return "A-render (id 34557 task-join, render thread)";
             return "unrecognised";
         }
 
@@ -741,6 +799,13 @@ namespace FreezeLogger::Snapshot::Verdict {
             a_os << "BSSpinLock spinner:  yes"
                  << (a_obs.spinlockOwnedByMain ? " (owner == MAIN — AB-BA cycle)" : "")
                  << "\n";
+        }
+
+        if (a_obs.renderInSiteA) {
+            a_os << std::format(
+                "Render-side Site-A:  yes (render thread parked in id 34557 "
+                "task-join at +0x{:x} — case-study 29 §6)\n",
+                a_obs.renderTaskFrameRva);
         }
 
         a_os << "Suggested triage:    " << v.triageDoc << "\n";

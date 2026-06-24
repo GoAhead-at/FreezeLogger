@@ -50,6 +50,18 @@ namespace FreezeLogger::Snapshot::Verdict {
         // RVA AND its observed lock-owner field equals main's TID.
         bool spinlockSpinnerSeen  = false;       // a spinner exists at all
         bool spinlockOwnedByMain  = false;       // owner == main TID
+
+        // Render-side Site-A worker-ack join (SE id 34557) — the render /
+        // worker thread is parked in a kernel wait with a saved return
+        // address inside the render-side per-task join function. This is the
+        // render counterpart of the main-side Site-A worker-ack deadlock
+        // (case-study 29 §6): a dispatched cloth sub-task's worker is stuck,
+        // so the render thread blocks forever waiting to join it and never
+        // signals the Singleton-A worker-ack. First captured in
+        // freeze_2026-06-24_053440 (main spinning on a heap BSSpinLock while
+        // render was parked here).
+        bool           renderInSiteA      = false;
+        std::uintptr_t renderTaskFrameRva = 0;   // RVA of the matched return
     };
 
     // ===== Classified verdict ==========================================
@@ -68,6 +80,7 @@ namespace FreezeLogger::Snapshot::Verdict {
         HdtsmpSiteB,           // Skyrim WaitForJobTask hang, FSMP on main stack
         SiteBNoHdtsmp,         // Skyrim WaitForJobTask hang, no FSMP on stack
         SiteAWorkerAck,        // Site-A worker-ack wait, no spinlock cycle
+        RenderSiteAWorkerAck,  // Render-side Site-A worker-ack join (id 34557)
         Unrecognised,
     };
 

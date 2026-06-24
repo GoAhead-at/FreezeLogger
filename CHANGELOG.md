@@ -7,6 +7,95 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 Diagnostic-only output format changes are not treated as a breaking SemVer event
 unless they remove or rename an existing section — fields may grow without notice.
 
+## [0.9.0] — 2026-06-24
+
+### Added
+- **Render-side Site-A worker-ack join detection (`id 34557`).** A new freeze
+  class, `RenderSiteAWorkerAck`, classifies the render-thread counterpart of
+  the main-side Site-A deadlock: the render/worker thread parks inside the
+  per-task cloth-join (`id 34557`, called from the worker loop `id 34567`)
+  waiting on a dispatched HDT-SMP sub-task that never completes, so it never
+  signals Singleton-A's worker-ack and any consumer (transitively, main)
+  hangs. This was previously the leading "Unrecognised" shape — captured in
+  `freeze_2026-06-24_053440`, where the render thread was parked here (RBP =
+  the Singleton-A instance, frames `id 34557+0x7d` / `id 34567+0x86`) while
+  main spun on a heap `BSSpinLock` held by the same stalled worker pool.
+  - `SkyrimAnchors` resolves `id 34557` by a byte-unique `.text` entry
+    signature (`40 53 56 57 48 83 EC 30 C6 41 71 01`) and bounds the function
+    by its terminating `ret`+`int3`. New `RenderSiteAAvailable()` accessor.
+    Version-independent (no SE-only RVA), so it runs on AE wherever the
+    signature resolves.
+  - `Verdict` probes the render thread (`Heartbeat::RenderTid()`) for a saved
+    return address inside `id 34557` and reports a `Render-side Site-A:` line;
+    confidence climbs to `high` when a `BSSpinLock` spinner corroborates the
+    main-side stall.
+  - `MainWaitProbe` gains a render-side characterization block: render thread
+    context, the `id 34557` frame match, and — interpreting RBP as the
+    Singleton-A instance the join moved it into — the Singleton-A field
+    readback plus an `NtQueryEvent` of the worker-ack `[+0x60]`.
+
+## [0.8.0] — 2026-06-20
+
+### Added
+- **Long-form Main::Update wait-helper audit now runs on AE 1.6.1170.** The
+  audit was previously gated to SE 1.5.97 because Site-A, the BSSpinLock
+  spin-retry site, and the Main::Update return addresses were hard-coded
+  SE-only RVAs. `SkyrimAnchors` now resolves all of them at runtime by
+  signature scan:
+  - **Site-A lock primitive (SE id 34554) + Singleton-A.** Anchored on a
+    version-stable body core (`test rbx,rbx / je / cmp [rbx+0x6c],1 / jne /
+    mov rcx,[rbx+0x60]`) that is byte-identical on SE and AE — only the
+    INFINITE setup differs (`or edx,-1` vs `mov edx,-1`), which sits outside
+    the anchor. Singleton-A is derived from the `mov rbx,[rip]` prologue and
+    the lock-return from the instruction after the `WaitForSingleObjectEx`
+    call. A match also proves the Singleton-A field layout
+    (`+0x60`/`+0x68`/`+0x6c`) is unchanged on the runtime.
+  - **Main::Update return addresses, anchor-only.** The unique
+    `call → Site-A lock fn` pins the Site-A return and locates Main::Update;
+    the Site-B returns are the `call → WaitForJobTask` sites within ±0x1000
+    of it (two on both SE and AE). No Address Library dependency.
+  - **BSSpinLock spin-retry site(s).** Signatured on the spin loop's yield
+    call; the owner search now tests every resolved site (1 on SE, 2 on AE).
+- New `SkyrimAnchors::SiteAAvailable()` / `SpinAvailable()` accessors and a
+  `SiteADiagnosticString()` line in the report header.
+- Offline validators `analysis/ae_siteA.py`, `analysis/find_callers.py`,
+  `analysis/disasm_region.py`. On SE they reproduce the previously hard-coded
+  constants exactly (`+0x5765d0`/`+0x2f26668`/`+0x5765ff`/`+0x5b34fe`/
+  `+0x132c5a`); on AE they yield `+0x5fc210`/`+0x31771d0`/`+0x5fc241`/
+  `{+0x64618c,+0x646758}`/`{+0x194a2a,+0x1af85a}`.
+
+### Changed
+- `Snapshot::MainWaitProbe::Write` no longer early-returns on non-SE-1.5.97
+  runtimes. Each sub-probe (Site-A, Site-B, BSSpinLock owner search) runs
+  independently and self-disables with an explicit "anchor unresolved" note
+  if its anchor was not found, instead of the whole audit printing
+  "SKIPPED on this runtime." Site-B's deep probe in particular was being
+  discarded on AE even though its anchors were already resolved.
+- The audit header and verdict text are now runtime-agnostic (module-relative
+  offsets) rather than citing SE-only absolute RVAs.
+
+## [0.7.1] — 2026-06-16
+
+### Fixed
+- **Site-B probe read the wrong Singleton-B slot.** `Snapshot::MainWaitProbe`
+  hard-coded `kSingletonBPtrRVA = 0x2f26a70`, the old `+0x400` hand-arithmetic
+  slip. `WaitForJobTask`'s prologue `mov rax,[rip+0x22ee539]` at `+0xc38130`
+  actually resolves to `+0xc38137 + 0x22ee539 = +0x2f26670` (the value the
+  runtime-anchored `SkyrimAnchors` / Task-pool sections already use). The
+  SE-1.5.97 long-form audit now reads the same slot, so the "Site-B probe" and
+  "Task pool snapshot" sections of a report can no longer contradict each other.
+- **Report header showed a hard-coded runtime.** The `Runtime:` line always
+  printed `Skyrim SE 1.5.97` even on AE. It now prints the real edition and
+  version from `REL::Module::get().version()`.
+- **Race on the resolution annotation.** `Reporter::AnnotateLatestResolved`
+  read `g_lastReportPath` and appended to the report file without the
+  `g_captureMutex` that the capture path holds; it could race a concurrent
+  (test-mode hotkey) capture. It now takes the same lock.
+- **Boot log lines were truncated away.** `Logger::Init` was called twice
+  (once before config, once after to apply the configured level); the second
+  call re-truncated the file, erasing the boot banner and any config-parse
+  errors. The post-config re-init now appends instead of truncating.
+
 ## [0.6.0] — 2026-06-03
 
 ### Added

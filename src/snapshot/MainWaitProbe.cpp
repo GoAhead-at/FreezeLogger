@@ -294,17 +294,6 @@ namespace FreezeLogger::Snapshot::MainWaitProbe {
             }
         }
 
-        bool TrySawWaitReturnAddr(
-            std::uintptr_t a_rsp,
-            std::uintptr_t a_skyrimBase,
-            std::size_t&   a_outDepthBytes,
-            DWORD&         a_seh) noexcept
-        {
-            return TrySawReturnAddr(
-                a_rsp, a_skyrimBase + kLockReturnRVA, 0x400,
-                a_outDepthBytes, a_seh);
-        }
-
         const char* InterpretPending(std::uint32_t a_pending) {
             if (a_pending == 0) {
                 return "no wait scheduled (cleared by lock primitive's post-wait writeback)";
@@ -735,10 +724,10 @@ namespace FreezeLogger::Snapshot::MainWaitProbe {
             std::uintptr_t handle_at_idx1;      // element_vtable[1*8]
         };
 
-        SingletonBChain WalkSingletonB(std::uintptr_t a_base) noexcept {
+        SingletonBChain WalkSingletonB(std::uintptr_t a_slotVA) noexcept {
             SingletonBChain c{};
             DWORD seh = 0;
-            if (!TryReadQword(a_base + kSingletonBPtrRVA, c.global_ptr, seh)) {
+            if (!TryReadQword(a_slotVA, c.global_ptr, seh)) {
                 c.seh_step = seh ? seh : 0xC0000005;
                 return c;
             }
@@ -866,14 +855,22 @@ namespace FreezeLogger::Snapshot::MainWaitProbe {
         // with the spin-retry return address SkyrimSE+0x132c5a on stack.
         // Lock layout: { uint32_t threadID; uint32_t lockState; }.
         void WriteSpinlockOwners(
-            std::ostream&  a_os,
-            std::uintptr_t a_base,
-            DWORD          a_mainTid)
+            std::ostream&         a_os,
+            const std::uintptr_t* a_spinRets,
+            std::size_t           a_spinCount,
+            DWORD                 a_mainTid)
         {
-            a_os << "\n  BSSpinLock-owner search "
-                    "(threads spinning at SkyrimSE+0x132c5a):\n";
-            constexpr std::uintptr_t kSpinRetRVA = 0x132c5a;
-            const std::uintptr_t spinRetAddr = a_base + kSpinRetRVA;
+            a_os << "\n  BSSpinLock-owner search (threads spinning at the "
+                    "resolved spin-retry site(s)):\n";
+            if (a_spinCount == 0) {
+                a_os << "    <spin-retry site not resolved on this runtime; "
+                        "skipping owner search>\n";
+                return;
+            }
+            for (std::size_t i = 0; i < a_spinCount; ++i) {
+                a_os << std::format("    spin-retry site #{}: 0x{:016x}\n",
+                                    i, a_spinRets[i]);
+            }
 
             const DWORD pid     = ::GetCurrentProcessId();
             const DWORD selfTid = ::GetCurrentThreadId();
@@ -900,16 +897,15 @@ namespace FreezeLogger::Snapshot::MainWaitProbe {
                 if (!gotCtx) continue;
 
                 bool isSpinning = false;
-                for (std::uintptr_t off = 0; off < 0x100; off += 8) {
+                for (std::uintptr_t off = 0; off < 0x100 && !isSpinning; off += 8) {
                     std::uintptr_t v = 0;
                     DWORD seh2 = 0;
                     if (!TryReadQword(static_cast<std::uintptr_t>(ctx.Rsp) + off,
                                       v, seh2)) {
                         break;
                     }
-                    if (v == spinRetAddr) {
-                        isSpinning = true;
-                        break;
+                    for (std::size_t i = 0; i < a_spinCount; ++i) {
+                        if (v == a_spinRets[i]) { isSpinning = true; break; }
                     }
                 }
                 if (!isSpinning) continue;
@@ -950,87 +946,287 @@ namespace FreezeLogger::Snapshot::MainWaitProbe {
             }
         }
 
-    void Write(std::ostream& a_os) {
-        // The long-form audit below is anchored on hard SE-1.5.97 RVAs for
-        // Site-A (the lock primitive, its singleton, the spin-retry site)
-        // and the Main::Update return addresses. Those have no AE/VR
-        // signatures yet, so on other runtimes we skip the long-form audit
-        // to avoid reading stale addresses. The Site-B / WaitForJobTask
-        // classification is still available everywhere via the runtime-
-        // anchored "Freeze classification" and "Task pool snapshot"
-        // sections (see SkyrimAnchors).
-        {
-            const auto v = REL::Module::get().version();
-            const bool se1597 =
-                REL::Module::IsSE() && v[0] == 1 && v[1] == 5 && v[2] == 97;
-            if (!se1597) {
-                a_os << "Main::Update wait-helper probe: SKIPPED on this "
-                        "runtime.\n";
-                a_os << std::format(
-                    "  Runtime {}.{}.{}.{} ({}). The long-form audit is "
-                    "anchored on SE-1.5.97-only\n",
-                    v[0], v[1], v[2], v[3],
-                    REL::Module::IsVR() ? "VR" : (REL::Module::IsAE() ? "AE" : "SE"));
-                a_os << "  RVAs (Site-A lock primitive, spin-retry, "
-                        "Main::Update return addresses) that have not yet\n";
-                a_os << "  been signatured for other builds. The Site-B / "
-                        "WaitForJobTask path IS covered on this\n";
-                a_os << "  runtime — see the \"Freeze classification\" and "
-                        "\"Task pool snapshot\" sections, which\n";
-                a_os << "  resolve WaitForJobTask + Singleton-B at runtime via "
-                        "signature scan.\n";
-                a_os << "  Anchor status: " << SkyrimAnchors::DiagnosticString()
-                     << "\n";
-                return;
+    // ===== Render-side Site-A join characterization ====================
+    // The render/worker thread runs the parallel cloth dispatch loop (SE
+    // id 34567) which, per work item, calls the per-task join function
+    // (SE id 34557) that waits INFINITE on each dispatched sub-task before
+    // signalling Singleton-A's worker-ack [+0x60]. When a sub-task's worker
+    // is stuck, the render thread parks forever inside id 34557 -- the
+    // render counterpart of the main-side Site-A deadlock (case-study 29
+    // §6). This section captures the render thread's context and, when it
+    // is parked in id 34557, interprets RBP as the Singleton-A instance the
+    // join function moved it into (mov rbp,rcx at entry) so an analyst can
+    // confirm the worker-ack handle + state that a render-side breaker
+    // would target. Self-contained SEH helpers keep this off the hot path
+    // and free of C2712.
+    namespace {
+
+        struct RenderCtxResult {
+            bool           ok  = false;
+            DWORD          err = 0;
+            std::uintptr_t rip = 0;
+            std::uintptr_t rsp = 0;
+            std::uintptr_t rbp = 0;
+            std::uintptr_t rbx = 0;
+            std::uintptr_t rsi = 0;
+            std::uintptr_t rdi = 0;
+        };
+
+        RenderCtxResult ReadRenderContext(DWORD a_tid) noexcept {
+            RenderCtxResult r{};
+            if (a_tid == 0) { r.err = ERROR_INVALID_PARAMETER; return r; }
+            const HANDLE h = ::OpenThread(
+                THREAD_GET_CONTEXT | THREAD_SUSPEND_RESUME |
+                    THREAD_QUERY_LIMITED_INFORMATION,
+                FALSE, a_tid);
+            if (!h) { r.err = ::GetLastError(); return r; }
+            const DWORD prev = ::SuspendThread(h);
+            if (prev == static_cast<DWORD>(-1)) {
+                r.err = ::GetLastError();
+                ::CloseHandle(h);
+                return r;
+            }
+            CONTEXT ctx{};
+            ctx.ContextFlags = CONTEXT_FULL;
+            if (!::GetThreadContext(h, &ctx)) {
+                r.err = ::GetLastError();
+            } else {
+                r.ok  = true;
+                r.rip = static_cast<std::uintptr_t>(ctx.Rip);
+                r.rsp = static_cast<std::uintptr_t>(ctx.Rsp);
+                r.rbp = static_cast<std::uintptr_t>(ctx.Rbp);
+                r.rbx = static_cast<std::uintptr_t>(ctx.Rbx);
+                r.rsi = static_cast<std::uintptr_t>(ctx.Rsi);
+                r.rdi = static_cast<std::uintptr_t>(ctx.Rdi);
+            }
+            ::ResumeThread(h);
+            ::CloseHandle(h);
+            return r;
+        }
+
+        // Scan [rsp, rsp+window) for the first saved qword in [lo, hi).
+        // SEH-bounded; returns the hit + its byte depth.
+        bool TrySawAddrInRange(std::uintptr_t  a_rsp,
+                               std::uintptr_t  a_lo,
+                               std::uintptr_t  a_hi,
+                               std::size_t     a_window,
+                               std::uintptr_t& a_outHit,
+                               std::size_t&    a_outDepth,
+                               DWORD&          a_seh) noexcept {
+            a_outHit = 0; a_outDepth = 0; a_seh = 0;
+            __try {
+                for (std::size_t off = 0; off < a_window;
+                     off += sizeof(std::uintptr_t)) {
+                    const auto v = *reinterpret_cast<volatile std::uintptr_t*>(
+                        a_rsp + off);
+                    if (v >= a_lo && v < a_hi) {
+                        a_outHit   = v;
+                        a_outDepth = off;
+                        return true;
+                    }
+                }
+                return false;
+            } __except (a_seh = ::GetExceptionCode(),
+                        EXCEPTION_EXECUTE_HANDLER) {
+                return false;
             }
         }
 
-        a_os << "Main::Update wait-helper probe (Skyrim SE 1.5.97):\n";
-        a_os << "  Two known infinite-wait sites inside RE::Main::Update:\n";
-        a_os << "    A) +0x5b35dd -> SkyrimSE+0x5765d0 (id 34554)\n";
-        a_os << "         Singleton-A @ SkyrimSE+0x2f26668; reads HANDLE\n";
-        a_os << "         from [singleton+0x60]; calls WaitForSingleObjectEx\n";
-        a_os << "         (signature: pending=1 + ack-event NOT signaled).\n";
-        a_os << "    B) +0x5b34fe -> SkyrimSE+0xc38130 (WaitForJobTask)\n";
-        a_os << "         Skyrim's job-pool wait — \"are there outstanding\n";
-        a_os << "         tasks? if yes, block until they drain\" — identified\n";
-        a_os << "         by the Faster HDT-SMP-UP maintainer (case-study 27,\n";
-        a_os << "         response of 2026-05-28). Singleton-B @ SkyrimSE+0x2f26670\n";
-        a_os << "         is the task-pool holder; the wrapper walks\n";
-        a_os << "         (*S)[+8][idx0]->vtable[idx1] and tail-jumps to\n";
-        a_os << "         KERNEL32!WaitForSingleObject. Main::Update calls\n";
-        a_os << "         this with idx0=0, idx1=1, dwMilliseconds=INFINITE.\n";
-        a_os << "  KERNELBASE clobbers the caller's RBX with the HANDLE\n";
-        a_os << "  for both wait functions, so we can read main's RBX and\n";
-        a_os << "  treat it as the kernel HANDLE main is currently parked on.\n\n";
+    }   // anonymous render helpers
 
-        const HMODULE skyrim = ::GetModuleHandleW(L"SkyrimSE.exe");
-        if (!skyrim) {
-            a_os << "  <SkyrimSE.exe module handle unavailable>\n";
+    void WriteRenderSiteA(std::ostream& a_os) {
+        const auto& anchors = SkyrimAnchors::Get();
+        a_os << "\n  Render-side Site-A join probe (SE id 34557, the render\n";
+        a_os << "  thread's per-task cloth-join; case-study 29 §6):\n";
+
+        if (!SkyrimAnchors::RenderSiteAAvailable()) {
+            a_os << "    <id 34557 signature not resolved on this runtime; "
+                    "render-side probe disabled>\n";
             return;
         }
-        const auto base = reinterpret_cast<std::uintptr_t>(skyrim);
+        a_os << std::format(
+            "    id 34557 range:                      +0x{:x} .. +0x{:x}\n",
+            anchors.renderTaskFnRVA,
+            anchors.renderTaskFnRVA +
+                (anchors.renderTaskFnEnd - anchors.renderTaskFn));
 
-        // ===== Probe 1: global slot at SkyrimSE+0x2f266c8 ================
+        const auto renderTid = static_cast<DWORD>(Heartbeat::RenderTid());
+        if (renderTid == 0) {
+            a_os << "    <render TID unknown — render heartbeat hasn't ticked>\n";
+            return;
+        }
+        const auto rc = ReadRenderContext(renderTid);
+        if (!rc.ok) {
+            a_os << std::format(
+                "    <ReadRenderContext failed: tid={}, err=0x{:08x}>\n",
+                renderTid, rc.err);
+            return;
+        }
+        a_os << std::format("    Render TID:                          {}\n", renderTid);
+        a_os << std::format("    Render RIP:                          0x{:016x}\n", rc.rip);
+        a_os << std::format("    Render RSP:                          0x{:016x}\n", rc.rsp);
+        a_os << std::format("    Render RBP:                          0x{:016x}\n", rc.rbp);
+        a_os << std::format("    Render RDI:                          0x{:016x}\n", rc.rdi);
+
+        std::uintptr_t hit = 0;
+        std::size_t    depth = 0;
+        DWORD          seh = 0;
+        const bool inFn = TrySawAddrInRange(
+            rc.rsp, anchors.renderTaskFn, anchors.renderTaskFnEnd,
+            0x800, hit, depth, seh);
+        if (!inFn) {
+            a_os << "    Parked in id 34557:                  no (no saved "
+                    "return address in range; render is elsewhere — likely "
+                    "idle at the worker-wake wait, not stuck)\n";
+            return;
+        }
+        a_os << std::format(
+            "    Parked in id 34557:                  YES (return @rsp+0x{:x} "
+            "-> +0x{:x})\n",
+            depth, hit - anchors.moduleBase);
+
+        // The join function does `mov rbp, rcx` at entry, so RBP holds the
+        // Singleton-A instance while parked (RBP is non-volatile). Interpret
+        // it as such, best-effort: only trust it if [+0x60] reads back as a
+        // real kernel Event handle.
+        if (!LooksLikePointer(rc.rbp)) {
+            a_os << "    <RBP is not a plausible pointer; cannot interpret the "
+                    "render Singleton-A from it>\n";
+            return;
+        }
+        SingletonFields f{};
+        DWORD fseh = 0;
+        if (!TryReadFields(rc.rbp, f, fseh)) {
+            a_os << std::format(
+                "    <render Singleton-A fields load faulted: SEH 0x{:08x}>\n",
+                fseh);
+            return;
+        }
+        a_os << "    Render Singleton-A (interpreting RBP as the instance):\n";
+        a_os << std::format(
+            "      [+0x58] worker-wake handle:        0x{:016x}\n",
+            f.worker_wake_handle);
+        a_os << std::format(
+            "      [+0x60] worker-ack  handle:        0x{:016x}\n",
+            f.worker_ack_handle);
+        a_os << std::format(
+            "      [+0x68] work-id:                   0x{:08x} ({})\n",
+            f.work_id, f.work_id);
+        a_os << std::format(
+            "      [+0x6c] pending flag:              0x{:08x} ({})\n",
+            f.pending, f.pending);
+        a_os << std::format(
+            "      [+0x70] flag2:                     0x{:02x}\n", f.flag2);
+        a_os << std::format(
+            "      [+0x71] flag3 (set by id 34557):   0x{:02x}\n", f.flag3);
+        a_os << std::format(
+            "      [+0x72] flag4 (set by id 34567):   0x{:02x}\n", f.flag4);
+
+        const auto ackHandle =
+            reinterpret_cast<HANDLE>(f.worker_ack_handle);
+        DWORD aflags = 0;
+        if (ackHandle == nullptr ||
+            !::GetHandleInformation(ackHandle, &aflags)) {
+            a_os << "    [+0x60] is not a current-process handle — RBP may not "
+                    "be the Singleton-A instance on this build; treat the "
+                    "fields above as best-effort.\n";
+        } else {
+            a_os << "    Worker-ack event state ([+0x60]):\n";
+            std::int32_t st = -1, ty = -1;
+            QueryAndPrintEvent(a_os, ackHandle, st, ty);
+            if (f.pending == 1 && st == 0) {
+                a_os << "      ===> render-side worker-ack NOT signaled while "
+                        "parked: a render-side SiteABreaker would SetEvent "
+                        "this handle.\n";
+            }
+        }
+    }
+
+    void Write(std::ostream& a_os) {
+        // The long-form audit reads engine anchors that are resolved at
+        // runtime by SkyrimAnchors (signature scan): Site-A (lock primitive
+        // id 34554, Singleton-A, the Main::Update return addresses), Site-B
+        // (WaitForJobTask + Singleton-B), and the BSSpinLock spin-retry
+        // site(s). The signatures are version-stable across SE 1.5.97 and
+        // AE 1.6.1170 (validated offline in analysis/ae_siteA.py), so this
+        // audit now runs on AE as well. Each sub-probe self-disables if its
+        // anchor was not resolved on the running build, rather than reading
+        // stale per-version RVAs.
+        const auto& anchors   = SkyrimAnchors::Get();
+        const bool  haveSiteA = SkyrimAnchors::SiteAAvailable();
+        const bool  haveSiteB = SkyrimAnchors::Available();
+        const bool  haveSpin  = SkyrimAnchors::SpinAvailable();
+
+        const auto v = REL::Module::get().version();
+        const char* runtime =
+            REL::Module::IsVR() ? "VR" : (REL::Module::IsAE() ? "AE" : "SE");
+        a_os << std::format(
+            "Main::Update wait-helper probe (runtime {}.{}.{}.{} {}):\n",
+            v[0], v[1], v[2], v[3], runtime);
+        a_os << "  Two known infinite-wait sites inside RE::Main::Update, all\n";
+        a_os << "  anchors resolved at runtime by signature scan:\n";
+        a_os << "    A) Site-A lock primitive (SE id 34554): reads HANDLE from\n";
+        a_os << "       [Singleton-A+0x60]; calls WaitForSingleObjectEx\n";
+        a_os << "       (signature: pending=1 + ack-event NOT signaled).\n";
+        a_os << "    B) WaitForJobTask: Skyrim's job-pool wait — \"are there\n";
+        a_os << "       outstanding tasks? if yes, block until they drain\" —\n";
+        a_os << "       identified by the Faster HDT-SMP-UP maintainer\n";
+        a_os << "       (case-study 27). Singleton-B is the task-pool holder;\n";
+        a_os << "       the wrapper walks (*S)[+8][idx0]->vtable[idx1] and\n";
+        a_os << "       tail-jumps to KERNEL32!WaitForSingleObject.\n";
+        a_os << "  KERNELBASE clobbers the caller's RBX with the HANDLE for\n";
+        a_os << "  both wait functions, so we read main's RBX as the kernel\n";
+        a_os << "  HANDLE main is currently parked on.\n";
+        a_os << "  Anchor status:\n";
+        a_os << "    Site-A: " << SkyrimAnchors::SiteADiagnosticString() << "\n";
+        a_os << "    Site-B: " << SkyrimAnchors::DiagnosticString() << "\n";
+
+        if (!haveSiteA && !haveSiteB && !haveSpin) {
+            a_os << "\n  No engine anchors resolved on this runtime — long-form\n";
+            a_os << "  audit unavailable. See the \"Freeze classification\" and\n";
+            a_os << "  \"Task pool snapshot\" sections for the runtime-anchored\n";
+            a_os << "  Site-B verdict.\n";
+            return;
+        }
+        a_os << "\n";
+
+        // Prefer the SkyrimAnchors-resolved module base (runtime-agnostic);
+        // fall back to the main module handle.
+        std::uintptr_t base = anchors.moduleBase;
+        if (base == 0) {
+            const HMODULE mod = ::GetModuleHandleW(nullptr);
+            if (!mod) {
+                a_os << "  <game module handle unavailable>\n";
+                return;
+            }
+            base = reinterpret_cast<std::uintptr_t>(mod);
+        }
+        a_os << std::format(
+            "  Module base:                         0x{:016x}\n", base);
+
+        // ===== Probe 1: Singleton-A global slot ==========================
         // Important caveat: a racing writer can clobber this slot while
         // main is parked. freeze_2026-05-17_184345 saw 0x1 here. We still
         // dump it — knowing what stomped on it is its own signal.
-        const auto globalAddr = base + kSingletonPtrRVA;
-        a_os << std::format(
-            "  SkyrimSE base:                       0x{:016x}\n", base);
-        a_os << std::format(
-            "  Singleton ptr global address:        0x{:016x}\n", globalAddr);
-
         std::uintptr_t globalSingleton = 0;
         DWORD seh = 0;
-        if (TryReadQword(globalAddr, globalSingleton, seh)) {
+        if (haveSiteA) {
+            const auto globalAddr = anchors.singletonASlot;
             a_os << std::format(
-                "  Singleton ptr global value:          0x{:016x}\n",
-                globalSingleton);
+                "  Singleton-A slot (+0x{:x}):           0x{:016x}\n",
+                anchors.singletonASlotRVA, globalAddr);
+            if (TryReadQword(globalAddr, globalSingleton, seh)) {
+                a_os << std::format(
+                    "  Singleton-A slot value:              0x{:016x}\n",
+                    globalSingleton);
+            } else {
+                a_os << std::format(
+                    "  <Singleton-A slot load faulted: SEH 0x{:08x}>\n", seh);
+                globalSingleton = 0;
+            }
         } else {
-            a_os << std::format(
-                "  <global load faulted: SEH 0x{:08x}>\n", seh);
-            globalSingleton = 0;
+            a_os << "  Singleton-A slot: <Site-A anchor unresolved on this "
+                    "runtime>\n";
         }
 
         // ===== Probe 2: main thread's CONTEXT register snapshot ==========
@@ -1058,44 +1254,68 @@ namespace FreezeLogger::Snapshot::MainWaitProbe {
             "    Main RSP:                          0x{:016x}\n", m.rsp);
 
         // ===== Wait-site identification ==================================
-        // Two known infinite-wait return-into-Main::Update sites:
-        //   A) +0x5765ff  (returns from the +0x5765d0 lock primitive)
-        //   B) +0x5b34fe  (returns from the +0xc38130 wrapper that
-        //                  tail-jumps to KERNEL32!WaitForSingleObject)
+        // Two known infinite-wait return-into-Main::Update sites, all
+        // anchored at runtime:
+        //   A) lock-return  (returns from the Site-A lock primitive — a real
+        //                    `call`, so the lock-return RIP sits on the stack)
+        //   B) Main::Update return after the WaitForJobTask call (the wrapper
+        //      tail-jumps into KERNEL32, so the saved RIP points back into
+        //      Main::Update, not the wrapper).
         // We detect both by scanning a small window above main's RSP.
+        constexpr std::uintptr_t kWrapperWindow = 0x40;
         const bool ripInLockFnA =
-            m.rip >= base + kLockFnLoRVA && m.rip < base + kLockFnHiRVA;
+            haveSiteA &&
+            m.rip >= anchors.siteALockFn && m.rip < anchors.siteALockFnEnd;
         const bool ripInWrapperB =
-            m.rip >= base + kWaitWrapperLoRVA && m.rip < base + kWaitWrapperHiRVA;
+            haveSiteB &&
+            m.rip >= anchors.waitForJobTask &&
+            m.rip <  anchors.waitForJobTask + kWrapperWindow;
 
         std::size_t retDepthA = 0;
         DWORD       scanSehA  = 0;
-        const bool retAInStack = TrySawWaitReturnAddr(m.rsp, base, retDepthA, scanSehA);
+        const bool retAInStack =
+            haveSiteA && TrySawReturnAddr(
+                m.rsp, anchors.siteALockReturn, 0x400, retDepthA, scanSehA);
 
         std::size_t retDepthB = 0;
         DWORD       scanSehB  = 0;
-        const bool  retBInStack = TrySawReturnAddr(
-            m.rsp, base + kMainUpdateRetBRVA, 0x400, retDepthB, scanSehB);
+        bool        retBInStack = false;
+        if (haveSiteB) {
+            for (std::size_t i = 0; i < anchors.mainUpdateRetBCount; ++i) {
+                std::size_t d = 0;
+                DWORD       s = 0;
+                if (TrySawReturnAddr(m.rsp, anchors.mainUpdateRetB[i], 0x400, d, s)) {
+                    retBInStack = true;
+                    retDepthB   = d;
+                    break;
+                }
+                if (s != 0) scanSehB = s;
+            }
+        }
 
         const bool inSiteA = ripInLockFnA  || retAInStack;
         const bool inSiteB = ripInWrapperB || retBInStack;
 
         a_os << "    Wait-site detection:\n";
-        if (inSiteA) {
+        if (!haveSiteA) {
+            a_os << "      A) Site-A lock primitive: <anchor unresolved>\n";
+        } else if (inSiteA) {
             a_os << std::format(
-                "      A) +0x5765d0 lock primitive: HIT  (rip-in-fn={}, "
+                "      A) Site-A lock primitive: HIT  (rip-in-fn={}, "
                 "return@rsp+0x{:x})\n",
                 ripInLockFnA, retDepthA);
         } else {
-            a_os << "      A) +0x5765d0 lock primitive: miss\n";
+            a_os << "      A) Site-A lock primitive: miss\n";
         }
-        if (inSiteB) {
+        if (!haveSiteB) {
+            a_os << "      B) WaitForJobTask wrapper: <anchor unresolved>\n";
+        } else if (inSiteB) {
             a_os << std::format(
-                "      B) +0xc38130 wrapper:        HIT  (rip-in-fn={}, "
+                "      B) WaitForJobTask wrapper: HIT  (rip-in-fn={}, "
                 "return@rsp+0x{:x})\n",
                 ripInWrapperB, retDepthB);
         } else {
-            a_os << "      B) +0xc38130 wrapper:        miss\n";
+            a_os << "      B) WaitForJobTask wrapper: miss\n";
         }
         if (scanSehA != 0 || scanSehB != 0) {
             a_os << std::format(
@@ -1130,11 +1350,13 @@ namespace FreezeLogger::Snapshot::MainWaitProbe {
         }
 
         // ===== Site A: Singleton-A interpretation (id 34554 lock primitive)
-        // Only meaningful when main is in/just-returned-from +0x5765d0.
+        // Only meaningful when main is in/just-returned-from the lock fn.
         SingletonFields fields{};
         bool fieldsOk = false;
         if (inSiteA) {
-            a_os << "\n  Site-A probe (Singleton-A @ SkyrimSE+0x2f26680):\n";
+            a_os << std::format(
+                "\n  Site-A probe (Singleton-A slot @ module+0x{:x}):\n",
+                anchors.singletonASlotRVA);
             a_os << "    Saved-singleton stack scan (looking for V where "
                     "*(V+0x60) == handle):\n";
             std::uintptr_t savedSingleton = 0;
@@ -1236,10 +1458,12 @@ namespace FreezeLogger::Snapshot::MainWaitProbe {
         SingletonBChain bChain{};
         bool bChainOk = false;
         if (inSiteB) {
-            a_os << "\n  Site-B probe (Singleton-B @ SkyrimSE+0x2f26670):\n";
-            bChain = WalkSingletonB(base);
             a_os << std::format(
-                "    *(SkyrimSE+0x2f26670):               0x{:016x}\n",
+                "\n  Site-B probe (Singleton-B slot @ module+0x{:x}):\n",
+                anchors.singletonBSlotRVA);
+            bChain = WalkSingletonB(anchors.singletonBSlot);
+            a_os << std::format(
+                "    *(Singleton-B slot):                 0x{:016x}\n",
                 bChain.global_ptr);
             a_os << std::format(
                 "    sub-array @ +0x08:                   0x{:016x}\n",
@@ -1359,17 +1583,20 @@ namespace FreezeLogger::Snapshot::MainWaitProbe {
         // Runs regardless of which wait site main is at. From the
         // 5/18 11:26 freeze, this exposed the lock-inversion deadlock
         // (4 worker threads spinning on a lock the main thread held).
-        WriteSpinlockOwners(a_os, base, mainTid);
+        WriteSpinlockOwners(a_os, anchors.spinRetAddr, anchors.spinRetCount, mainTid);
 
         // ===== Final verdict =============================================
         if (inSiteA && fieldsOk && fields.pending == 1 && evState == 0) {
             a_os << "\n";
             a_os << "    ===> DEADLOCK SIGNATURE MATCH <===\n";
-            a_os << "         pending=1: id34553 set the work-pending flag.\n";
+            a_os << "         pending=1: the dispatcher set the work-pending flag.\n";
             a_os << "         worker-ack EventState=0: worker never signaled\n";
             a_os << "                                  completion to main.\n";
-            a_os << "         Main is parked in id34554's INFINITE wait at\n";
-            a_os << "         SkyrimSE+0x5765f9 → KERNELBASE!WaitForSingleObjectEx.\n";
+            a_os << std::format(
+                "         Main is parked in the Site-A lock primitive's "
+                "INFINITE wait\n         (module+0x{:x} → "
+                "KERNELBASE!WaitForSingleObjectEx).\n",
+                anchors.siteALockReturnRVA);
             a_os << "         Investigation path: see worker-thread search and\n";
             a_os << "         BSSpinLock-owner search above. If the lock owner\n";
             a_os << "         is the main TID, this is a lock-inversion deadlock.\n";
@@ -1379,8 +1606,10 @@ namespace FreezeLogger::Snapshot::MainWaitProbe {
             a_os << "    be unblocking imminently; may be a transient probe.\n";
         } else if (inSiteB) {
             a_os << "\n";
-            a_os << "    Verdict: main is parked inside Skyrim's\n";
-            a_os << "    WaitForJobTask (SkyrimSE+0xc38130), waiting INFINITE\n";
+            a_os << std::format(
+                "    Verdict: main is parked inside Skyrim's\n"
+                "    WaitForJobTask (module+0x{:x}), waiting INFINITE\n",
+                anchors.waitForJobTaskRVA);
             a_os << "    on a HANDLE drawn from Singleton-B — i.e. main is\n";
             a_os << "    \"waiting on jobs before rendering\" and one of the\n";
             a_os << "    in-flight jobs is not completing. Producer is\n";
@@ -1406,6 +1635,12 @@ namespace FreezeLogger::Snapshot::MainWaitProbe {
             a_os << "    down a worker-side livelock independent of where\n";
             a_os << "    main is parked.\n";
         }
+
+        // ===== Render-side Site-A join (id 34557) ========================
+        // Runs unconditionally: in the case-study 29 §6 shape main is NOT in
+        // a recognised site (it spins on a heap BSSpinLock) while the render
+        // thread is the one parked in the render-side worker-ack join.
+        WriteRenderSiteA(a_os);
     }
 
 }
