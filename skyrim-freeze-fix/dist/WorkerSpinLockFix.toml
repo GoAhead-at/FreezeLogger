@@ -156,10 +156,15 @@ enabled = true
 # Set to false to ACTIVELY recover: the watchdog force-releases the
 # leaked lock via an interlocked compare-exchange that clears it to 0
 # ONLY if it still holds exactly the proven-leaked (owner,state) word, so
-# it can never clobber a lock that changed in the last instant. Releasing
-# a provably-leaked lock is safe -- its "owner" never reaches its own
-# unlock, so the clear cannot race a legitimate release; worst case it is
-# a no-op if the victim was contending a different lock.
+# it can never clobber a lock that changed in the last instant.
+#
+# FIELD BEHAVIOUR (v2.6.0): active mode does NOT fix the underlying leak
+# producer. If the engine keeps leaking locks (e.g. a specific actor's
+# HDT-SMP cloth path), the session enters a STUTTER LOOP — stuck for
+# ~dwell+recheck seconds, briefly runs, stuck again — instead of a
+# permanent hard-freeze. That is often enough to move the camera, leave
+# the area, or identify a content trigger. Removing the trigger stops
+# recurrence. See docs/case-study/30-leaked-spinlock-breaker.md.
 detect_only = true
 
 # How long the lock must be held UNCHANGED by a parked owner before the

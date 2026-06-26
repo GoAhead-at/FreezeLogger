@@ -210,6 +210,10 @@ path is validated against a FreezeLogger v0.9.0 render-side capture, because
 the ack publishes completion to the waiter rather than unblocking the deepest
 per-sub-task wait inside `id 34557`.
 
+**Follow-up (case-study 30):** when main simultaneously spins on a leaked heap
+`BSSpinLock` held by the same idle worker pool, Layers 3–4 cannot unblock main.
+`LeakedSpinLockBreaker` (Layer 5, v2.6.0) force-releases that lock.
+
 ## 7. Open questions
 - AE anchoring for `id 34554` / `id 35565` / Singleton-A (RelocationID vs
   body signature). SE 1.5.97 is confirmed by all captures. (`id 34557` resolves

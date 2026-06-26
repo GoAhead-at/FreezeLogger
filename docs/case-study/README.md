@@ -331,6 +331,11 @@ and ultimately used to localize a deadlock to two specific functions inside
   plus a detect-only rollout phase, config, safety argument, and
   interim load-reduction mitigation. Also records that this capture's
   automated stuck-job attributor misfired on a `0x1` discriminator.
+- `29-siteabreaker-plan.md` - `SiteABreaker` / `SiteARenderBreaker` plan
+  and evidence for the main- and render-side Site-A worker-ack deadlocks.
+- `30-leaked-spinlock-breaker.md` - `LeakedSpinLockBreaker` design,
+  FreezeLogger v0.10–v0.11.1 diagnosis chain, field validation (active mode
+  stutter loop vs hard-freeze), and content-trigger correlation.
 - `appendix-A-evidence.md` - Raw freeze logs, disassembly excerpts, register
   dumps used as evidence in the main narrative.
 

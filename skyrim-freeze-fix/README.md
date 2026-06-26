@@ -31,7 +31,12 @@ See [Multi-version support](#multi-version-support) for the SE↔AE map.
 layer (Layer 5), a watchdog that force-releases a provably-leaked
 `BSSpinLock` held by a parked idle worker (case-study 30; proven by
 FreezeLogger v0.11.1 in `freeze_2026-06-25_222116`), on top of
-**v2.5.0**, which adds the `SiteARenderBreaker` layer
+**v2.5.0**. Field validation shows active mode (`detect_only = false`)
+replaces a **hard-freeze** with a **stutter loop** (stuck → released →
+stuck) while the leak producer remains — enough to move the camera and
+narrow a content trigger, but not a root-cause cure. See
+[`docs/case-study/30-leaked-spinlock-breaker.md`](../docs/case-study/30-leaked-spinlock-breaker.md).
+**v2.5.0** adds the `SiteARenderBreaker` layer
 (Layer 4), the render-thread counterpart of `SiteABreaker`, on top of
 **v2.4.1** (a documentation/metadata maintenance build) and **v2.4.0**, which
 added the `SiteABreaker` layer (Layer 3). v2.3.0 added `JobWaitBreaker` and **removed** the v1.0
@@ -46,7 +51,7 @@ independent fixes that share no state.
 
 | Version | Status | Summary |
 |---|---|---|
-| v2.6.0 | **Current.** | Adds **`LeakedSpinLockBreaker`** (Layer 5) — recovery for the **leaked `BSSpinLock`** freeze (case-study 30; proven by FreezeLogger v0.11.1's parked-holder steady-state probe in `freeze_2026-06-25_222116`). A thread (main, via the HDT-SMP cloth chain `id 35565` → `BSSpinLock::Acquire` `id 12210`) spins forever on a heap lock whose `[+0]` owner is an idle worker parked in a kernel wait inside the pool (`id 68058`, on the pool Semaphore) that acquired the lock and went idle **without releasing it** — a lock-ownership deadlock no `SetEvent` (Layers 2–4) can break. A watchdog (no inline hook) scans suspended threads for one contending a lock at a version-independent spin-retry signature, follows the owner, and — only once the owner is provably parked and the lock's `(owner,state)` word plus the holder's RIP stay byte-for-byte unchanged across the dwell + recheck window — force-releases the lock via an `InterlockedCompareExchange64` that no-ops if anything moved. Ships **detect-only** by default. |
+| v2.6.0 | **Current.** | Adds **`LeakedSpinLockBreaker`** (Layer 5) — recovery for the **leaked `BSSpinLock`** freeze (case-study 30; proven by FreezeLogger v0.11.1's parked-holder steady-state probe in `freeze_2026-06-25_222116`). A thread (main, via the HDT-SMP cloth chain `id 35565` → `BSSpinLock::Acquire` `id 12210`) spins forever on a heap lock whose `[+0]` owner is an idle worker parked in a kernel wait inside the pool (`id 68058`, on the pool Semaphore) that acquired the lock and went idle **without releasing it** — a lock-ownership deadlock no `SetEvent` (Layers 2–4) can break. A watchdog (no inline hook) scans suspended threads for one contending a lock at a version-independent spin-retry signature, follows the owner, and — only once the owner is provably parked and the lock's `(owner,state)` word plus the holder's RIP stay byte-for-byte unchanged across the dwell + recheck window — force-releases the lock via an `InterlockedCompareExchange64` that no-ops if anything moved. Ships **detect-only** by default. **Field validation:** active mode breaks the hard-freeze but recurs as a stutter loop while the leak producer stays active; disabling a correlated actor ref (`000198DC` / Dervenin) stopped recurrence. |
 | v1.0.0 | Released 2026-05-21, removed | Runtime breaker only: surgical hook on `BSSpinLock::Acquire`, lock-free wait-for graph, time-based confirmation, force-release via `InterlockedCompareExchange`. Retired in v2.3.0. |
 | v2.0.0–v2.0.3 | 2026-05-22 → 24, superseded | Added the structural fix (`Phase4Defer`) as the primary layer; fixed a 6-arg skyshard regression; rebased the LockB gates onto two surgical `Trampoline::write_call<5>` call-site patches; redesigned the reaper around `WaitGraph::SnapshotEdges`. See case-studies 22–26. |
 | v2.1.0 | Released 2026-06-03, superseded | Moved the runtime detector onto a `safetyhook` mid-hook at `id 12210 +0x8a` (the backoff retry point) so uncontended/recursive acquires ran native with zero added cost — removing hot-path overhead that stacked under framerate-amplifying mods (e.g. PureDark's upscaler). |

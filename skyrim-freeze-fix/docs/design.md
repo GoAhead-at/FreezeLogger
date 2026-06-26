@@ -4,21 +4,13 @@ This document describes the architecture of the `WorkerSpinLockFix`
 SKSE plugin: what each module does, why it is shaped that way, and the
 invariants that hold across the whole system.
 
-> **v2.3.0 architecture change.** The plugin now ships **two
-> independent fixes for two *different* freeze classes**, and the
-> earlier v1.0 runtime breaker stack has been removed. Sections
-> §2.2 (runtime breaker), §3.2-§3.4 (`AcquireHook` / `WaitGraph` /
-> `Breaker`), §3.5 (`Reaper`), and §3.6 (`TestMode`) below describe
-> code that **no longer exists in the plugin**; they are retained for
-> historical reference only. The reason for the removal: field
-> telemetry showed `Phase4Defer` prevents the AB-BA cycle outright
-> (`cycles_observed=0` across long sessions), so the runtime breaker
-> never fired and was pure redundancy. Its reaper backstop (only ever
-> useful for a *dead-owner* orphaned lock, a case that does not occur
-> for this live-thread AB-BA bug) and the synthetic test harness went
-> with it.
+> **v2.6.0 architecture.** The plugin now ships **five independent fixes for
+> five *different* freeze classes**. Sections §2.2 (runtime breaker),
+> §3.2-§3.4 (`AcquireHook` / `WaitGraph` / `Breaker`), §3.5 (`Reaper`),
+> and §3.6 (`TestMode`) describe code that **no longer exists**; they are
+> retained for historical reference only.
 
-The plugin's two current layers:
+The plugin's five current layers:
 
 1. **Layer 1 - AB-BA spinlock prevention (`Phase4Defer`).** One inline
    hook on the LockA acquirer (`id 19369`) plus two surgical
@@ -65,9 +57,21 @@ The plugin's two current layers:
    event still unsignalled across a confirmation window) and, in active
    mode, delivers the missing signal via `SetEvent`. See §3.8 and
    [`../../docs/case-study/29-siteabreaker-plan.md`](../../docs/case-study/29-siteabreaker-plan.md).
+4. **Layer 4 - render-side Site-A worker-ack recovery (`SiteARenderBreaker`,
+   new in v2.5.0).** The render-thread counterpart of Layer 3 (case-study
+   29 §6): the worker loop (`id 34567`) parks in the per-task join
+   (`id 34557`) when a dispatched sub-task never completes. See §3.9.
+5. **Layer 5 - leaked `BSSpinLock` force-release (`LeakedSpinLockBreaker`,
+   new in v2.6.0).** A *fifth* freeze class (case-study 30): main (via the
+   HDT-SMP cloth chain `id 35565` -> `BSSpinLock::Acquire` `id 12210`)
+   spins on a heap lock whose owner is an idle worker parked in the pool
+   (`id 68058`) that leaked the unlock. A watchdog force-releases the lock
+   after steady-state proof; active mode breaks the hard-freeze but does
+   not stop recurrence if the leak producer remains. See §3.10 and
+   [`../../docs/case-study/30-leaked-spinlock-breaker.md`](../../docs/case-study/30-leaked-spinlock-breaker.md).
 
-The three layers are fully independent: they target different bugs, hook
-different functions, and share no state.
+The five layers are fully independent: they target different bugs, hook
+different functions (or none, for Layer 5), and share no state.
 
 For the engine bug being fixed see
 [`../../docs/case-study/06-root-cause.md`](../../docs/case-study/06-root-cause.md).
@@ -738,7 +742,50 @@ render-side probe in `MainWaitProbe`) confirms the release path. Defaults:
 `enabled=true`, `detect_only=true`, `dwell_threshold_ms=5000`,
 `poll_interval_ms=1000`, `recheck_window_ms=1500`. Config block
 `[site_a_render_breaker]`. `AvailableSiteARender()` gates the module. Like the
-other layers it never suspends an engine thread or reads a thread context.
+other event-based layers it never suspends an engine thread on the hot path.
+
+### 3.10 Layer 5 — leaked `BSSpinLock` force-release (`LeakedSpinLockBreaker`, new in v2.6.0)
+
+Documented in
+[case-study 30](../../docs/case-study/30-leaked-spinlock-breaker.md) and first
+proven by FreezeLogger v0.11.1's parked-holder steady-state probe in
+`freeze_2026-06-25_222116`. When Faster HDT-SMP drives parallel cloth work
+(`id 35565`), the main thread can reach `BSSpinLock::Acquire` (`id 12210`) and
+spin forever on a heap lock. The lock's `[+0]` owner names a **different**
+thread — an idle-pool worker parked in a kernel wait (`id 68058`, on the pool
+**Semaphore**) that acquired the lock on an earlier iteration and returned to
+the loop **without** releasing it. FreezeLogger's steady-state check shows
+owner/state frozen over 150 ms: the lock is **leaked**, not merely contended.
+`SetEvent` on worker-ack handles (Layers 2–4) cannot restore a missing
+unlock.
+
+Unlike Layers 2–4 there is **no inline hook**: a watchdog scans all threads
+each poll for one contending a `BSSpinLock` at a resolved spin-retry site,
+follows the foreign owner, and requires:
+
+- owner parked in a system wait module (not spinning mid-acquire);
+- lock `(owner, state)` word unchanged across `dwell_threshold_ms`;
+- same proof unchanged across `recheck_window_ms`.
+
+**Detect-only** (`detect_only=true`, default): log the signature; the
+hard-freeze persists.
+
+**Active** (`detect_only=false`): `InterlockedCompareExchange64` clears the
+lock to `0` only if the proven word is still present. The victim proceeds; the
+leaker never releases.
+
+**Field behaviour (v2.6.0, active mode):** the permanent hard-freeze becomes a
+**stutter loop** — stuck → force-released → stuck — while the leak producer
+remains active. Partial frame progress between releases can allow camera
+movement and content narrowing. Removing the trigger (e.g. disabling a specific
+actor ref correlated with the leak) stops recurrence without further releases.
+Layer 5 is a **symptom breaker**, not a root-cause fix for the unlock leak.
+
+Defaults: `enabled=true`, `detect_only=true`, `dwell_threshold_ms=5000`,
+`poll_interval_ms=1000`, `recheck_window_ms=1500`. Config block
+`[leaked_spinlock_breaker]`. `AvailableSpinRetry()` gates the module. Layer 5
+**does** suspend threads briefly each poll (snapshot context only); this is
+the trade-off for lock-state inspection without a wrap point.
 
 ---
 
