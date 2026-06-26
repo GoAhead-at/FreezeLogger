@@ -1,11 +1,17 @@
 #include "PCH.h"
 #include "snapshot/MainWaitProbe.h"
 
+#include "AddrLib.h"
 #include "Heartbeat.h"
 #include "SkyrimAnchors.h"
+#include "Symbols.h"
 
 #include <Windows.h>
 #include <TlHelp32.h>
+#include <cctype>
+#include <cstdio>
+#include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace FreezeLogger::Snapshot::MainWaitProbe {
@@ -946,6 +952,510 @@ namespace FreezeLogger::Snapshot::MainWaitProbe {
             }
         }
 
+        // ===== BSSpinLock wait-for chain (deadlock-cycle resolver) ========
+        // The owner search above lists every thread spinning at the
+        // BSSpinLock retry site and the lock candidates in its frame. This
+        // section goes one step further for the MAIN thread: it isolates the
+        // specific lock main is contending (a BSSpinLock whose [+0] owner is
+        // a DIFFERENT, live thread), then FOLLOWS that owner -- is it
+        // running, parked in a kernel wait while still holding the lock, or
+        // itself spinning on a third lock? -- chaining hop by hop until it
+        // closes a cycle (A waits B waits ... waits A) or hits a terminal
+        // holder. This is what separates a recoverable lost-wakeup from a
+        // true deadlock and tells a breaker WHERE to act.
+        //
+        // Motivation (freeze_2026-06-25_103341): with the render-side ack
+        // SetEvent recovery active, main still froze parked in
+        // BSSpinLock::Acquire (id 12210) reached via the HDT-SMP cloth chain
+        // (id 35565). No existing layer hooks that site; this resolver pins
+        // the lock owner so a proper fix can be designed.
+
+        std::string LowerForFind(std::string a_s) {
+            for (auto& c : a_s) {
+                c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            }
+            return a_s;
+        }
+
+        // Lower-cased base name of the module that contains a_addr, or "" if
+        // the address is not inside any loaded module. Address-based (not
+        // symbol-text based) so it works even when DbgHelp has no symbols for
+        // the module — which is the common case for ntdll/KERNELBASE on a
+        // player's box, where Symbols::Resolve returns only a bare hex value.
+        std::string ModuleBaseNameForAddr(std::uintptr_t a_addr) {
+            HMODULE hmod = nullptr;
+            if (!::GetModuleHandleExW(
+                    GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                        GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                    reinterpret_cast<LPCWSTR>(a_addr), &hmod) ||
+                hmod == nullptr)
+            {
+                return {};
+            }
+            wchar_t path[MAX_PATH] = {};
+            const DWORD n = ::GetModuleFileNameW(hmod, path, MAX_PATH);
+            if (n == 0) return {};
+            std::wstring w(path, n);
+            const auto slash = w.find_last_of(L"\\/");
+            const std::wstring base =
+                (slash == std::wstring::npos) ? w : w.substr(slash + 1);
+            std::string out;
+            out.reserve(base.size());
+            for (wchar_t c : base) {
+                out.push_back(static_cast<char>(
+                    std::tolower(static_cast<int>(c) & 0xff)));
+            }
+            return out;
+        }
+
+        // True for the system DLLs a thread's RIP sits in while parked in a
+        // kernel wait (the syscall stub / wait wrapper live here).
+        bool IsSystemWaitModule(const std::string& a_lowerName) {
+            return a_lowerName == "ntdll.dll"      ||
+                   a_lowerName == "kernelbase.dll" ||
+                   a_lowerName == "kernel32.dll"   ||
+                   a_lowerName == "win32u.dll"     ||
+                   a_lowerName == "user32.dll";
+        }
+
+        // Scan a thread's stack for the first few return addresses that the
+        // Address Library resolves to a SkyrimSE.exe function, so the chain
+        // can show *what engine code* a parked owner is sitting in (e.g. the
+        // worker idle pool "id 68058 / id 67147") without a full StackWalk.
+        std::string ScanOwnerEngineFrames(std::uintptr_t a_rsp,
+                                           std::size_t    a_maxFrames = 4) {
+            std::string out;
+            std::size_t found = 0;
+            std::uintptr_t lastBase = 0;
+            for (std::uintptr_t off = 0; off < 0x600 && found < a_maxFrames;
+                 off += 8) {
+                std::uintptr_t v = 0;
+                DWORD          seh = 0;
+                if (!TryReadQword(a_rsp + off, v, seh)) break;
+                const auto anno = AddrLib::FormatAnnotation(v);
+                if (anno.empty()) continue;
+                const auto hit = AddrLib::Resolve(v);
+                if (hit.found && hit.base_rva == lastBase) continue;  // dedupe
+                lastBase = hit.found ? hit.base_rva : 0;
+                if (!out.empty()) out += " -> ";
+                out += anno;
+                ++found;
+            }
+            return out;
+        }
+
+        struct ForeignLock {
+            std::uintptr_t addr  = 0;
+            std::uint32_t  owner = 0;
+            std::uint32_t  state = 0;
+            const char*    src   = "";
+        };
+
+        // Collect BSSpinLock candidates referenced by a thread whose [+0]
+        // owner field is a live, foreign TID and whose [+4] state is held.
+        // Searches the integer registers and a stack window (the contended
+        // BSSpinLock::Acquire keeps `this` in a home/spill slot across the
+        // wait escalation).
+        void CollectForeignLocks(
+            const ThreadProbe&               a_p,
+            DWORD                            a_ownerSelfTid,
+            const std::unordered_set<DWORD>& a_live,
+            std::vector<ForeignLock>&        a_out)
+        {
+            auto consider = [&](std::uintptr_t v, const char* src) {
+                if (!LooksLikePointer(v)) return;
+                if ((v & 0x3) != 0) return;
+                const auto lk = TryReadSpinLock(v);
+                if (lk.owner == 0xffffffff) return;          // unreadable
+                if (lk.state == 0 || lk.state > 2) return;   // not held
+                if (lk.owner == 0 || lk.owner == a_ownerSelfTid) return;
+                if (lk.owner >= 200000) return;              // implausible TID
+                if (!a_live.count(lk.owner)) return;         // owner not alive
+                for (const auto& e : a_out) {
+                    if (e.addr == v) return;                 // dedupe
+                }
+                a_out.push_back({v, lk.owner, lk.state, src});
+            };
+
+            const struct { const char* name; std::uintptr_t v; } regs[] = {
+                {"RAX", a_p.rax}, {"RBX", a_p.rbx}, {"RCX", a_p.rcx},
+                {"RDX", a_p.rdx}, {"RSI", a_p.rsi}, {"RDI", a_p.rdi},
+                {"R8",  a_p.r8 }, {"R9",  a_p.r9 }, {"R10", a_p.r10},
+                {"R11", a_p.r11}, {"R12", a_p.r12}, {"R13", a_p.r13},
+                {"R14", a_p.r14}, {"R15", a_p.r15},
+            };
+            for (const auto& r : regs) consider(r.v, r.name);
+            for (std::uintptr_t off = 0; off < 0x400; off += 8) {
+                std::uintptr_t v = 0;
+                DWORD          seh = 0;
+                if (!TryReadQword(a_p.rsp + off, v, seh)) break;
+                consider(v, "stack");
+            }
+        }
+
+        struct ThreadDisposition {
+            bool        inKernelWait = false;
+            bool        spinning     = false;
+            std::string ripDesc;
+            std::string engineFrames;   // AddrLib-resolved frames on its stack
+        };
+
+        ThreadDisposition DescribeThread(
+            const ThreadProbe&    a_p,
+            const std::uintptr_t* a_spinRets,
+            std::size_t           a_spinCount)
+        {
+            ThreadDisposition d{};
+
+            // Classify the run state by the MODULE the RIP lives in, not by
+            // symbol text: a thread parked in a wait has its RIP inside
+            // ntdll/KERNELBASE, and DbgHelp often can't symbolicate those on a
+            // player's machine (it returns a bare address). The old text scan
+            // therefore mis-reported parked workers as "RUNNING"
+            // (freeze_2026-06-25_190341, TID 32004).
+            const auto mod = ModuleBaseNameForAddr(a_p.rip);
+            d.inKernelWait = IsSystemWaitModule(mod);
+
+            std::string sym;
+            {
+                Symbols::Lock lk;
+                sym = Symbols::ResolveLocked(a_p.rip);
+            }
+            const auto idAnno = AddrLib::FormatAnnotation(a_p.rip);
+            d.ripDesc = sym;
+            if (!idAnno.empty()) {
+                d.ripDesc += "  " + idAnno;
+            } else if (!mod.empty() &&
+                       sym.find(mod) == std::string::npos) {
+                // Symbol was a bare address — append the owning module so the
+                // reader at least sees "ntdll.dll".
+                d.ripDesc += "  (" + mod + ")";
+            }
+
+            for (std::uintptr_t off = 0; off < 0x100 && !d.spinning; off += 8) {
+                std::uintptr_t v = 0;
+                DWORD          seh = 0;
+                if (!TryReadQword(a_p.rsp + off, v, seh)) break;
+                for (std::size_t i = 0; i < a_spinCount; ++i) {
+                    if (v == a_spinRets[i]) { d.spinning = true; break; }
+                }
+            }
+
+            d.engineFrames = ScanOwnerEngineFrames(a_p.rsp);
+            return d;
+        }
+
+        bool LooksLikeHandleValue(std::uintptr_t a_v) noexcept {
+            // Win32 HANDLEs are small, 4-byte-aligned kernel-table indices.
+            // Floor at 0x10 to skip the pseudo/low values (0x4/0x8/0xc) that
+            // are technically valid but never a worker wait object.
+            return a_v >= 0x10 && a_v <= 0x0100'0000 && (a_v & 0x3) == 0;
+        }
+
+        // ntdll!NtQueryObject(ObjectTypeInformation) — gives the kernel type
+        // name ("Event" / "Semaphore" / "Mutant" / …) for any valid handle.
+        // The worker pool parks on a Semaphore, not an Event, so the old
+        // Event-only probe missed it (freeze_2026-06-25_195855: RDI/R14 =
+        // 0x680 was the pool wait object but printed nothing).
+        struct UNICODE_STRING_ {
+            USHORT Length;
+            USHORT MaximumLength;
+            PWSTR  Buffer;
+        };
+        using NtQueryObjectFn =
+            LONG(NTAPI*)(HANDLE, int, PVOID, ULONG, PULONG);
+
+        std::string QueryHandleTypeName(HANDLE a_h) {
+            static const auto fn = reinterpret_cast<NtQueryObjectFn>(
+                ::GetProcAddress(::GetModuleHandleW(L"ntdll.dll"),
+                                 "NtQueryObject"));
+            if (!fn) return {};
+            alignas(16) unsigned char buf[0x400] = {};
+            ULONG ret = 0;
+            // ObjectTypeInformation == 2
+            if (fn(a_h, 2, buf, sizeof(buf), &ret) != 0) return {};
+            const auto* us = reinterpret_cast<const UNICODE_STRING_*>(buf);
+            if (!us->Buffer || us->Length == 0) return {};
+            std::string out;
+            const auto count = us->Length / sizeof(wchar_t);
+            out.reserve(count);
+            for (std::size_t i = 0; i < count; ++i) {
+                out.push_back(static_cast<char>(us->Buffer[i] & 0xff));
+            }
+            return out;
+        }
+
+        // Compact probe: if a_val is a valid current-process waitable handle,
+        // print its kernel type (and, for Events, signaled state) on one line
+        // and return true. Quiet otherwise.
+        bool ProbeWaitableHandle(std::ostream&  a_os,
+                                 std::uintptr_t a_val,
+                                 const char*    a_src) {
+            const HANDLE h = reinterpret_cast<HANDLE>(a_val);
+            DWORD flags = 0;
+            if (!::GetHandleInformation(h, &flags)) return false;
+            const auto type = QueryHandleTypeName(h);
+            if (type.empty()) return false;
+            a_os << std::format("      [{}] handle 0x{:x}: {}",
+                                a_src, a_val, type);
+            if (type == "Event") {
+                static const auto pNtQueryEvent = LoadNtQueryEvent();
+                if (pNtQueryEvent) {
+                    EVENT_BASIC_INFORMATION_ info{};
+                    ULONG ret = 0;
+                    if (pNtQueryEvent(h, 0, &info, sizeof(info), &ret) == 0) {
+                        a_os << std::format(
+                            " ({}, {})",
+                            info.EventType == 1 ? "auto-reset" : "manual-reset",
+                            info.EventState ? "SIGNALED" : "NOT signaled");
+                    }
+                }
+            }
+            a_os << "\n";
+            return true;
+        }
+
+        // Dump the data a recovery-layer designer needs once the chain has
+        // identified a BSSpinLock held by a parked worker: (1) the lock
+        // object + neighbouring memory (to identify what it guards / its
+        // owning class via any code pointer), and (2) the parked owner's
+        // wait handle(s) (the event a "wake the holder" recovery would
+        // SetEvent so the worker resumes and releases the lock).
+        void WriteParkedHolderDetail(std::ostream&  a_os,
+                                     std::uintptr_t a_lockAddr,
+                                     DWORD          a_ownerTid) {
+            a_os << "\n    --- parked-holder detail (for designing a safe "
+                    "recovery) ---\n";
+
+            // (1) Lock object + surrounding memory.
+            a_os << std::format(
+                "    Lock object 0x{:016x} (window -0x20..+0x50):\n",
+                a_lockAddr);
+            const auto winStart =
+                (a_lockAddr >= 0x20) ? (a_lockAddr - 0x20) : a_lockAddr;
+            DumpMemoryWindow(a_os, winStart, 14);
+            bool anyCodePtr = false;
+            for (int i = -8; i < 12; ++i) {
+                std::uintptr_t v = 0;
+                DWORD          seh = 0;
+                const auto cur = a_lockAddr + static_cast<std::intptr_t>(i) * 8;
+                if (!TryReadQword(cur, v, seh)) continue;
+                const auto anno = AddrLib::FormatAnnotation(v);
+                if (anno.empty()) continue;
+                a_os << std::format(
+                    "      [lock{:+#x}] 0x{:016x} -> {} (likely vtable / "
+                    "owning class — identifies what the lock guards)\n",
+                    static_cast<std::intptr_t>(i) * 8, v, anno);
+                anyCodePtr = true;
+            }
+            if (!anyCodePtr) {
+                a_os << "      <no Address-Library code pointer in the window; "
+                        "the owning object's class is not identifiable from "
+                        "memory alone>\n";
+            }
+
+            // (2) Parked owner's wait handle(s) — any waitable kernel object
+            //     (Event / Semaphore / Mutant), not just Events. The engine
+            //     worker pool parks on a Semaphore.
+            const auto p = SnapshotThread(a_ownerTid);
+            a_os << std::format(
+                "    Owner TID {} wait-object scan (valid current-process "
+                "handles in regs/stack):\n", a_ownerTid);
+            std::unordered_set<std::uintptr_t> seen;
+            int found = 0;
+            const struct { const char* n; std::uintptr_t v; } regs[] = {
+                {"RAX", p.rax}, {"RBX", p.rbx}, {"RCX", p.rcx},
+                {"RDX", p.rdx}, {"RSI", p.rsi}, {"RDI", p.rdi},
+                {"R8",  p.r8 }, {"R9",  p.r9 }, {"R10", p.r10},
+                {"R11", p.r11}, {"R12", p.r12}, {"R13", p.r13},
+                {"R14", p.r14}, {"R15", p.r15},
+            };
+            for (const auto& r : regs) {
+                if (!LooksLikeHandleValue(r.v) || seen.count(r.v)) continue;
+                seen.insert(r.v);
+                if (ProbeWaitableHandle(a_os, r.v, r.n)) ++found;
+            }
+            for (std::uintptr_t off = 0; off < 0x100; off += 8) {
+                std::uintptr_t v = 0;
+                DWORD          seh = 0;
+                if (!TryReadQword(p.rsp + off, v, seh)) break;
+                if (!LooksLikeHandleValue(v) || seen.count(v)) continue;
+                seen.insert(v);
+                char lbl[24] = {};
+                std::snprintf(lbl, sizeof(lbl), "stack+0x%llx",
+                              static_cast<unsigned long long>(off));
+                if (ProbeWaitableHandle(a_os, v, lbl)) ++found;
+            }
+            if (found == 0) {
+                a_os << "      <no valid waitable handle found in regs/stack; "
+                        "the wait object was consumed by the syscall — see the "
+                        "owner's Threads stack>\n";
+            } else {
+                a_os << "    Note: an idle-pool worker waits on the shared "
+                        "pool Semaphore; releasing it makes the worker look "
+                        "for work, NOT release this lock. If the lock is "
+                        "leaked (see steady-state below) the only recovery is "
+                        "a force-release of the lock itself.\n";
+            }
+
+            // (3) Steady-state test: is the lock genuinely LEAKED (owner/state
+            //     frozen over a sample window) or transiently held? This is
+            //     the go/no-go evidence for a force-release recovery.
+            const auto first = TryReadSpinLock(a_lockAddr);
+            ::Sleep(150);
+            const auto second = TryReadSpinLock(a_lockAddr);
+            if (first.owner != 0xffffffff && second.owner != 0xffffffff &&
+                first.owner == second.owner && first.state == second.state &&
+                second.state != 0)
+            {
+                a_os << std::format(
+                    "    Steady-state: lock owner/state UNCHANGED over 150 ms "
+                    "(owner={}, state={}) — the lock is effectively LEAKED; "
+                    "the holder will not release it. A gated force-release is "
+                    "the only thing that can unblock main.\n",
+                    second.owner, second.state);
+            } else {
+                a_os << std::format(
+                    "    Steady-state: lock changed during sampling "
+                    "(owner {}->{}, state {}->{}) — may be progressing; "
+                    "re-capture before acting.\n",
+                    first.owner, second.owner, first.state, second.state);
+            }
+        }
+
+        void WriteBSSpinLockCycle(
+            std::ostream&         a_os,
+            const std::uintptr_t* a_spinRets,
+            std::size_t           a_spinCount,
+            DWORD                 a_mainTid)
+        {
+            a_os << "\n  BSSpinLock wait-for chain (who holds the lock main is "
+                    "blocked on?):\n";
+            if (a_spinCount == 0) {
+                a_os << "    <spin-retry site not resolved; chain walk "
+                        "skipped>\n";
+                return;
+            }
+            if (a_mainTid == 0) {
+                a_os << "    <main TID unknown; chain walk skipped>\n";
+                return;
+            }
+
+            const DWORD pid     = ::GetCurrentProcessId();
+            const DWORD selfTid = ::GetCurrentThreadId();
+            const auto  tidVec  = EnumerateThreadsLocal(pid);
+            const std::unordered_set<DWORD> live(tidVec.begin(), tidVec.end());
+
+            std::unordered_set<DWORD> visited;
+            DWORD cur = a_mainTid;
+
+            for (int hop = 0; hop < 8; ++hop) {
+                if (cur == selfTid) {
+                    a_os << "    (chain reached the FreezeLogger watchdog "
+                            "thread; stopping)\n";
+                    break;
+                }
+                const auto p = SnapshotThread(cur);
+                if (p.rip == 0) {
+                    a_os << std::format(
+                        "    TID {}: <context unavailable>\n", cur);
+                    break;
+                }
+
+                std::vector<ForeignLock> locks;
+                CollectForeignLocks(p, cur, live, locks);
+
+                if (locks.empty()) {
+                    const auto d = DescribeThread(p, a_spinRets, a_spinCount);
+                    a_os << std::format(
+                        "    TID {}{} is not blocked on a foreign-owned "
+                        "BSSpinLock (rip {}{}).\n",
+                        cur, (cur == a_mainTid) ? " [MAIN]" : "",
+                        d.ripDesc,
+                        d.inKernelWait ? " — parked in a kernel wait"
+                                       : (d.spinning ? " — spinning" : ""));
+                    if (hop == 0) {
+                        a_os << "    No main-side BSSpinLock cycle to chase "
+                                "(main is not contending a held foreign "
+                                "lock right now; see the owner search "
+                                "above).\n";
+                    }
+                    break;
+                }
+
+                const auto& edge = locks.front();
+                a_os << std::format(
+                    "    TID {}{} is acquiring BSSpinLock 0x{:016x} (seen in "
+                    "{}), held by TID {} (state={}).\n",
+                    cur, (cur == a_mainTid) ? " [MAIN]" : "",
+                    edge.addr, edge.src, edge.owner, edge.state);
+                for (std::size_t i = 1; i < locks.size(); ++i) {
+                    a_os << std::format(
+                        "        (also references held lock 0x{:016x} owned "
+                        "by TID {})\n", locks[i].addr, locks[i].owner);
+                }
+
+                if (edge.owner == a_mainTid || visited.count(edge.owner)) {
+                    a_os << std::format(
+                        "    >>> DEADLOCK CYCLE: TID {} closes the loop back "
+                        "to a thread already in the chain. This is a true "
+                        "mutual-wait deadlock, NOT a lost wakeup — SetEvent "
+                        "on a worker-ack will not break it; the breaker must "
+                        "make the lock owner release (or prevent the "
+                        "inversion).\n",
+                        edge.owner);
+                    break;
+                }
+                visited.insert(cur);
+
+                const auto op = SnapshotThread(edge.owner);
+                if (op.rip == 0) {
+                    a_os << std::format(
+                        "    TID {} (lock owner): <context unavailable>\n",
+                        edge.owner);
+                    break;
+                }
+                const auto od = DescribeThread(op, a_spinRets, a_spinCount);
+
+                if (od.spinning) {
+                    a_os << std::format(
+                        "    TID {} (lock owner) is ITSELF spinning on a "
+                        "BSSpinLock (rip {}); following its edge…\n",
+                        edge.owner, od.ripDesc);
+                    cur = edge.owner;
+                    continue;
+                }
+                if (od.inKernelWait) {
+                    a_os << std::format(
+                        "    TID {} (lock owner) holds the lock but is PARKED "
+                        "in a kernel wait at {} — it is not running, so the "
+                        "lock is held ACROSS a park and main can never "
+                        "acquire it.\n",
+                        edge.owner, od.ripDesc);
+                    if (!od.engineFrames.empty()) {
+                        a_os << std::format(
+                            "        owner engine frames: {}\n",
+                            od.engineFrames);
+                    }
+                    a_os << "    >>> ROOT CAUSE: a BSSpinLock is held across a "
+                            "thread park. The proper fix targets this holder — "
+                            "wake it to release, or prevent it parking while "
+                            "holding the lock. SetEvent on a worker-ack will "
+                            "NOT help (this is a lock-ownership deadlock, not a "
+                            "lost wakeup).\n";
+                    WriteParkedHolderDetail(a_os, edge.addr, edge.owner);
+                    break;
+                }
+                a_os << std::format(
+                    "    TID {} (lock owner) appears to be RUNNING (rip {}); "
+                    "the lock should release shortly. If main stays blocked "
+                    "across captures the owner is live-looping while "
+                    "holding it.\n",
+                    edge.owner, od.ripDesc);
+                break;
+            }
+        }
+
     // ===== Render-side Site-A join characterization ====================
     // The render/worker thread runs the parallel cloth dispatch loop (SE
     // id 34567) which, per work item, calls the per-task join function
@@ -954,11 +1464,12 @@ namespace FreezeLogger::Snapshot::MainWaitProbe {
     // is stuck, the render thread parks forever inside id 34557 -- the
     // render counterpart of the main-side Site-A deadlock (case-study 29
     // §6). This section captures the render thread's context and, when it
-    // is parked in id 34557, interprets RBP as the Singleton-A instance the
-    // join function moved it into (mov rbp,rcx at entry) so an analyst can
-    // confirm the worker-ack handle + state that a render-side breaker
-    // would target. Self-contained SEH helpers keep this off the hot path
-    // and free of C2712.
+    // is parked in id 34557, reads the resolved GLOBAL Singleton-A instance
+    // (the same one the main-side Site-A uses) to confirm the worker-ack
+    // handle + state a render-side breaker would target. (RBP is NOT the
+    // instance: id 34557's prologue does not set rbp=rcx, so an earlier
+    // RBP-as-instance read access-violated in the field.) Self-contained
+    // SEH helpers keep this off the hot path and free of C2712.
     namespace {
 
         struct RenderCtxResult {
@@ -1085,24 +1596,43 @@ namespace FreezeLogger::Snapshot::MainWaitProbe {
             "-> +0x{:x})\n",
             depth, hit - anchors.moduleBase);
 
-        // The join function does `mov rbp, rcx` at entry, so RBP holds the
-        // Singleton-A instance while parked (RBP is non-volatile). Interpret
-        // it as such, best-effort: only trust it if [+0x60] reads back as a
-        // real kernel Event handle.
-        if (!LooksLikePointer(rc.rbp)) {
-            a_os << "    <RBP is not a plausible pointer; cannot interpret the "
-                    "render Singleton-A from it>\n";
+        // id 34557 receives the Singleton-A instance in rcx (first arg) but
+        // its prologue does NOT establish rbp as a frame pointer (push
+        // rbx/rsi/rdi; sub rsp,0x30; mov [rcx+0x71],1) — so RBP at the wait
+        // point is a leftover caller value, NOT the instance. Reading
+        // [RBP+0x60] access-violated in freeze_2026-06-24/25 (SEH
+        // 0xc0000005). The render-side join uses the SAME Singleton-A the
+        // main-side Site-A (id 34554) does, so we read the resolved GLOBAL
+        // Singleton-A instance instead — the authoritative source for the
+        // worker-ack handle the render thread is blocked on.
+        std::uintptr_t singleton = 0;
+        DWORD          sseh      = 0;
+        if (!SkyrimAnchors::SiteAAvailable() ||
+            !TryReadQword(anchors.singletonASlot, singleton, sseh) ||
+            !LooksLikePointer(singleton))
+        {
+            a_os << std::format(
+                "    <global Singleton-A unresolved (slot @+0x{:x}); cannot "
+                "read the render-side worker-ack fields>\n",
+                anchors.singletonASlotRVA);
+            a_os << std::format(
+                "    (RBP=0x{:016x} is NOT the instance; id 34557 does not set "
+                "rbp=rcx)\n", rc.rbp);
             return;
         }
+
         SingletonFields f{};
         DWORD fseh = 0;
-        if (!TryReadFields(rc.rbp, f, fseh)) {
+        if (!TryReadFields(singleton, f, fseh)) {
             a_os << std::format(
-                "    <render Singleton-A fields load faulted: SEH 0x{:08x}>\n",
+                "    <global Singleton-A fields load faulted: SEH 0x{:08x}>\n",
                 fseh);
             return;
         }
-        a_os << "    Render Singleton-A (interpreting RBP as the instance):\n";
+        a_os << std::format(
+            "    Singleton-A instance (global, @0x{:016x} — same instance the\n"
+            "    main-side Site-A uses; RBP is not the instance here):\n",
+            singleton);
         a_os << std::format(
             "      [+0x58] worker-wake handle:        0x{:016x}\n",
             f.worker_wake_handle);
@@ -1127,17 +1657,20 @@ namespace FreezeLogger::Snapshot::MainWaitProbe {
         DWORD aflags = 0;
         if (ackHandle == nullptr ||
             !::GetHandleInformation(ackHandle, &aflags)) {
-            a_os << "    [+0x60] is not a current-process handle — RBP may not "
-                    "be the Singleton-A instance on this build; treat the "
-                    "fields above as best-effort.\n";
+            a_os << "    [+0x60] is not a current-process handle on this build; "
+                    "treat the fields above as best-effort.\n";
         } else {
             a_os << "    Worker-ack event state ([+0x60]):\n";
             std::int32_t st = -1, ty = -1;
             QueryAndPrintEvent(a_os, ackHandle, st, ty);
-            if (f.pending == 1 && st == 0) {
+            if (st == 0) {
                 a_os << "      ===> render-side worker-ack NOT signaled while "
-                        "parked: a render-side SiteABreaker would SetEvent "
-                        "this handle.\n";
+                        "the render thread is parked in id 34557: a render-side\n"
+                        "      SiteARenderBreaker would SetEvent this handle. "
+                        "NOTE: if main is ALSO stuck acquiring a BSSpinLock "
+                        "(see the\n      wait-for chain above), SetEvent alone "
+                        "will NOT lift the freeze — that is a lock deadlock, "
+                        "not a lost wakeup.\n";
             }
         }
     }
@@ -1584,6 +2117,12 @@ namespace FreezeLogger::Snapshot::MainWaitProbe {
         // 5/18 11:26 freeze, this exposed the lock-inversion deadlock
         // (4 worker threads spinning on a lock the main thread held).
         WriteSpinlockOwners(a_os, anchors.spinRetAddr, anchors.spinRetCount, mainTid);
+
+        // Follow the lock owner(s) main is contending to expose a true
+        // deadlock cycle (vs a recoverable lost-wakeup) and identify the
+        // holder a proper breaker must target.
+        WriteBSSpinLockCycle(a_os, anchors.spinRetAddr, anchors.spinRetCount,
+                             mainTid);
 
         // ===== Final verdict =============================================
         if (inSiteA && fieldsOk && fields.pending == 1 && evState == 0) {

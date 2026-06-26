@@ -30,6 +30,22 @@ namespace WorkerSpinLockFix::Stats {
     // Active mode delivered the missing signal (SetEvent) to release main.
     void OnSiteAReleased() noexcept;
 
+    // ---- SiteARenderBreaker (render-side Site-A worker-ack recovery) ---
+    // The render-side deadlock signature was confirmed (the render/worker
+    // thread parked in id 34557 past the dwell threshold with zero
+    // progress, worker-ack never signaled).
+    void OnSiteARenderStuck() noexcept;
+    // Active mode delivered the missing worker-ack (SetEvent).
+    void OnSiteARenderReleased() noexcept;
+
+    // ---- LeakedSpinLockBreaker (leaked BSSpinLock recovery) -----------
+    // The leaked-lock signature was confirmed (a BSSpinLock held unchanged
+    // by a parked owner past the dwell threshold while another thread
+    // spins on it).
+    void OnLeakedLockStuck() noexcept;
+    // Active mode force-released the leaked lock.
+    void OnLeakedLockReleased() noexcept;
+
     void StartPeriodicDump();
     void Stop();
 

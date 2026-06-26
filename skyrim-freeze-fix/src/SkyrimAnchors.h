@@ -66,6 +66,47 @@ namespace WorkerSpinLockFix::SkyrimAnchors {
         std::uintptr_t singletonASlot    = 0;  // address of the global ptr slot
         std::uintptr_t siteALockFnRVA    = 0;
         std::uintptr_t singletonASlotRVA = 0;
+
+        // ----- Render-side Site-A join (SE id 34557) --------------------
+        // The render/worker thread's analog of main's Site-A. The engine's
+        // parallel cloth dispatch (driven by Faster HDT-SMP) runs a worker
+        // loop (id 34567) that, per work item, calls a per-task join
+        // function (id 34557) which waits INFINITE on each dispatched
+        // sub-task before signalling Singleton-A's worker-ack [+0x60]. When
+        // a sub-task's worker is stuck/gone, the render thread parks forever
+        // inside id 34557 and never acks -- the render counterpart of the
+        // main-side worker-ack deadlock (case-study 29 §6; first captured in
+        // freeze_2026-06-24_053440). Unlike id 34554, id 34557 receives its
+        // Singleton-A in rcx (no rip-relative slot), and `mov rbp,rcx` at
+        // entry, so the SiteARenderBreaker captures the singleton from the
+        // first argument at wrap entry rather than from a derived slot.
+        // Anchored on the byte-unique entry prologue
+        //   push rbx; push rsi; push rdi; sub rsp,0x30; mov byte [rcx+0x71],1
+        // (40 53 56 57 48 83 EC 30 C6 41 71 01).
+        bool           renderTaskResolved = false;
+        std::uintptr_t renderTaskFn       = 0;  // id 34557 entry (to wrap)
+        std::uintptr_t renderTaskFnRVA    = 0;
+
+        // ----- BSSpinLock spin-retry site(s) (LeakedSpinLockBreaker) ----
+        // The address(es) a thread parks/loops on while acquiring a
+        // BSSpinLock (SkyrimSE id 12210, BSSpinLock::Acquire). The lock
+        // body's spin loop is `inc ebx; xor ecx,ecx; call <yield>; xor
+        // eax,eax; lock cmpxchg [rdi+4], r14d`, and the `xor eax,eax`
+        // right after the yield call is the return address a contending
+        // thread shows on its stack. The call displacement is the only
+        // version-variable field, so the signature wildcards bytes 6..9
+        // and resolves on SE/AE/VR alike. The LeakedSpinLockBreaker scans
+        // suspended threads for these return addresses to find a thread
+        // contending a BSSpinLock, then follows the lock's [+0] owner.
+        // Several spin-retry sites can exist (the lock acquire is inlined
+        // in a handful of places), so we collect up to kMaxSpinRets of
+        // them. If none is found, AvailableSpinRetry() stays false and
+        // the breaker stays idle.
+        static constexpr std::size_t kMaxSpinRets = 8;
+        bool           spinResolved = false;
+        std::uint32_t  spinRetCount = 0;
+        std::uintptr_t spinRets[kMaxSpinRets] = {};      // absolute VAs
+        std::uintptr_t spinRetsRVA[kMaxSpinRets] = {};   // module-relative
     };
 
     // Resolve once (idempotent). Safe to call from SKSEPlugin_Load onward.
@@ -80,6 +121,14 @@ namespace WorkerSpinLockFix::SkyrimAnchors {
     // True iff the Site-A signature scan found id 34554 AND derived a
     // non-null Singleton-A slot. The SiteABreaker gates on this.
     [[nodiscard]] bool AvailableSiteA() noexcept;
+
+    // True iff the render-side join function (id 34557) was resolved. The
+    // SiteARenderBreaker gates on this.
+    [[nodiscard]] bool AvailableSiteARender() noexcept;
+
+    // True iff at least one BSSpinLock spin-retry site was resolved. The
+    // LeakedSpinLockBreaker gates on this.
+    [[nodiscard]] bool AvailableSpinRetry() noexcept;
 
     // Human-readable one-liner for logs (Site-B / WaitForJobTask).
     [[nodiscard]] const char* DiagnosticString();

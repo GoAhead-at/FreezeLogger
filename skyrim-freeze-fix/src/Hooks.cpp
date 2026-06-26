@@ -3,8 +3,10 @@
 
 #include "Config.h"
 #include "JobWaitBreaker.h"
+#include "LeakedSpinLockBreaker.h"
 #include "Phase4Defer.h"
 #include "SiteABreaker.h"
+#include "SiteARenderBreaker.h"
 #include "SkyrimAnchors.h"
 
 namespace WorkerSpinLockFix::Hooks {
@@ -57,15 +59,45 @@ namespace WorkerSpinLockFix::Hooks {
                 "(site_a_breaker.enabled = false).");
         }
 
+        // ---- Layer 4: render-side Site-A worker-ack recovery ------------
+        bool sar_active = false;
+        if (cfg.sar_enabled) {
+            if (SiteARenderBreaker::Install()) {
+                sar_active = true;
+            }
+        } else {
+            logs::info(
+                "[SiteARenderBreaker] disabled by config "
+                "(site_a_render_breaker.enabled = false).");
+        }
+
+        // ---- Layer 5: leaked BSSpinLock force-release recovery ----------
+        bool lsb_active = false;
+        if (cfg.lsb_enabled) {
+            if (LeakedSpinLockBreaker::Install()) {
+                lsb_active = true;
+            }
+        } else {
+            logs::info(
+                "[LeakedSpinLockBreaker] disabled by config "
+                "(leaked_spinlock_breaker.enabled = false).");
+        }
+
         logs::info(
             "WorkerSpinLockFix armed. phase4_active={} (AB-BA spinlock "
             "prevention), job_wait_breaker_active={} (WaitForJobTask "
             "lost-wakeup recovery, detect_only={}), site_a_breaker_active={} "
-            "(Site-A worker-ack deadlock recovery, detect_only={}).",
+            "(Site-A worker-ack deadlock recovery, detect_only={}), "
+            "site_a_render_breaker_active={} (render-side Site-A worker-ack "
+            "recovery, detect_only={}), leaked_spinlock_breaker_active={} "
+            "(leaked BSSpinLock force-release, detect_only={}).",
             phase4_active, jwb_active, cfg.jwb_detect_only,
-            sab_active, cfg.sab_detect_only);
+            sab_active, cfg.sab_detect_only,
+            sar_active, cfg.sar_detect_only,
+            lsb_active, cfg.lsb_detect_only);
 
-        return phase4_active || jwb_active || sab_active;
+        return phase4_active || jwb_active || sab_active || sar_active ||
+               lsb_active;
     }
 
 }

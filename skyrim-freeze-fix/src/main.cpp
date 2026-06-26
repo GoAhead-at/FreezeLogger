@@ -123,6 +123,8 @@ extern "C" [[maybe_unused]] __declspec(dllexport) bool SKSEAPI SKSEPlugin_Load(
         "WorkerSpinLockFix loaded successfully. Phase4Defer (AB-BA "
         "spinlock prevention) + JobWaitBreaker (WaitForJobTask "
         "lost-wakeup recovery) + SiteABreaker (Site-A worker-ack "
-        "deadlock recovery) active.");
+        "deadlock recovery) + SiteARenderBreaker (render-side Site-A "
+        "worker-ack recovery) + LeakedSpinLockBreaker (leaked BSSpinLock "
+        "force-release) active.");
     return true;
 }

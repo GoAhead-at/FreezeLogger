@@ -690,7 +690,55 @@ Defaults: `enabled=true`, `detect_only=true`, `dwell_threshold_ms=5000`,
 `recheck_window_ms=1500`. Like Layer 2 it never suspends an engine thread
 or reads a thread context and installs no process-wide hook; `id 34554`
 is main-only (the render thread uses a different Singleton-A pair,
-`id 34557/34567`), so the wrap never runs off the main thread.
+`id 34557/34567`), which Layer 4 covers.
+
+### 3.9 Layer 4 — render-side Site-A worker-ack recovery (`SiteARenderBreaker`, new in v2.5.0)
+
+The render-thread counterpart of Layer 3, documented in
+[case-study 29 §6](../../docs/case-study/29-siteabreaker-plan.md) and first
+captured in `freeze_2026-06-24_053440`. Faster HDT-SMP's per-frame parallel
+cloth dispatch runs a worker loop (`id 34567`) on the render thread that, per
+work item, calls a per-task join function (`id 34557`) which waits `INFINITE`
+on each dispatched sub-task before the loop signals Singleton-A's worker-ack
+`[+0x60]`. When a sub-task worker is stuck or gone (the same "0 idle" worker
+pool that produces the main-side variant), the render thread parks forever
+inside `id 34557` and never reaches the ack `SetEvent`, so any consumer
+waiting on that ack hangs. In the capture the render thread was parked here
+(RBP = the Singleton-A instance; frames `id 34557+0x7d` / `id 34567+0x86`)
+while main spun on a heap `BSSpinLock` held by the same stuck pool.
+
+`id 34567` reads the **same** Singleton-A field layout as main's `id 34554`
+(`[+0x58]` worker-wake, `[+0x60]` worker-ack, `[+0x6c]` pending) — confirmed
+by disassembly — so the recovery mirrors `SiteABreaker` exactly, with two
+differences:
+
+- The wrap is installed on **`id 34557`** (located by a byte-unique `.text`
+  entry signature `40 53 56 57 48 83 EC 30 C6 41 71 01` =
+  `push rbx; push rsi; push rdi; sub rsp,0x30; mov byte [rcx+0x71],1`), because
+  that is the function the render thread is actually parked inside while stuck.
+- `id 34557` receives its Singleton-A in **`rcx`** (it does `mov rbp,rcx` at
+  entry) rather than via a rip-relative slot, so the breaker captures the
+  singleton from the first argument at wrap entry rather than from a derived
+  slot. The worker-ack is read as `[singleton+0x60]`.
+
+The episode gate is "a non-null worker-ack handle at entry" (every `id 34557`
+call is a real dispatched work item — the loop only calls it after a
+worker-wake — so unlike the render worker-wake wait there is no idle
+false-positive to guard against). The watchdog's zero-progress signature is:
+same episode (sequence unchanged + still parked) with the work-id + ack handle
+unchanged across the re-check window and the ack event still unsignalled.
+`id 34557` normally returns every frame (~16 ms), so a join still in the same
+episode after the dwell + re-check window is genuinely stuck.
+
+`SetEvent` on the worker-ack publishes the completion ack the stuck join would
+have raised (releasing the waiter); it does **not** itself unblock the deepest
+per-sub-task wait inside `id 34557`. That semantic is why Layer 4 ships
+detect-only by default until a field capture (FreezeLogger v0.9.0's
+render-side probe in `MainWaitProbe`) confirms the release path. Defaults:
+`enabled=true`, `detect_only=true`, `dwell_threshold_ms=5000`,
+`poll_interval_ms=1000`, `recheck_window_ms=1500`. Config block
+`[site_a_render_breaker]`. `AvailableSiteARender()` gates the module. Like the
+other layers it never suspends an engine thread or reads a thread context.
 
 ---
 

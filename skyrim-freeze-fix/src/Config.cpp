@@ -94,6 +94,40 @@ namespace WorkerSpinLockFix::Config {
                 tbl["site_a_breaker"]["diagnostic_logging"].value_or(
                     g_settings.sab_diagnostic_logging);
 
+            g_settings.sar_enabled =
+                tbl["site_a_render_breaker"]["enabled"].value_or(g_settings.sar_enabled);
+            g_settings.sar_detect_only =
+                tbl["site_a_render_breaker"]["detect_only"].value_or(g_settings.sar_detect_only);
+            g_settings.sar_dwell_threshold_ms = static_cast<std::uint32_t>(
+                tbl["site_a_render_breaker"]["dwell_threshold_ms"].value_or<std::int64_t>(
+                    g_settings.sar_dwell_threshold_ms));
+            g_settings.sar_poll_interval_ms = static_cast<std::uint32_t>(
+                tbl["site_a_render_breaker"]["poll_interval_ms"].value_or<std::int64_t>(
+                    g_settings.sar_poll_interval_ms));
+            g_settings.sar_recheck_window_ms = static_cast<std::uint32_t>(
+                tbl["site_a_render_breaker"]["recheck_window_ms"].value_or<std::int64_t>(
+                    g_settings.sar_recheck_window_ms));
+            g_settings.sar_diagnostic_logging =
+                tbl["site_a_render_breaker"]["diagnostic_logging"].value_or(
+                    g_settings.sar_diagnostic_logging);
+
+            g_settings.lsb_enabled =
+                tbl["leaked_spinlock_breaker"]["enabled"].value_or(g_settings.lsb_enabled);
+            g_settings.lsb_detect_only =
+                tbl["leaked_spinlock_breaker"]["detect_only"].value_or(g_settings.lsb_detect_only);
+            g_settings.lsb_dwell_threshold_ms = static_cast<std::uint32_t>(
+                tbl["leaked_spinlock_breaker"]["dwell_threshold_ms"].value_or<std::int64_t>(
+                    g_settings.lsb_dwell_threshold_ms));
+            g_settings.lsb_poll_interval_ms = static_cast<std::uint32_t>(
+                tbl["leaked_spinlock_breaker"]["poll_interval_ms"].value_or<std::int64_t>(
+                    g_settings.lsb_poll_interval_ms));
+            g_settings.lsb_recheck_window_ms = static_cast<std::uint32_t>(
+                tbl["leaked_spinlock_breaker"]["recheck_window_ms"].value_or<std::int64_t>(
+                    g_settings.lsb_recheck_window_ms));
+            g_settings.lsb_diagnostic_logging =
+                tbl["leaked_spinlock_breaker"]["diagnostic_logging"].value_or(
+                    g_settings.lsb_diagnostic_logging);
+
             logs::info(
                 "Config loaded from {}: enabled={}, stats_interval_s={}, "
                 "phase4_defer_enabled={}, "
@@ -103,7 +137,13 @@ namespace WorkerSpinLockFix::Config {
                 "jwb_recheck_window_ms={}, jwb_diagnostic_logging={}, "
                 "sab_enabled={}, sab_detect_only={}, "
                 "sab_dwell_threshold_ms={}, sab_poll_interval_ms={}, "
-                "sab_recheck_window_ms={}, sab_diagnostic_logging={}",
+                "sab_recheck_window_ms={}, sab_diagnostic_logging={}, "
+                "sar_enabled={}, sar_detect_only={}, "
+                "sar_dwell_threshold_ms={}, sar_poll_interval_ms={}, "
+                "sar_recheck_window_ms={}, sar_diagnostic_logging={}, "
+                "lsb_enabled={}, lsb_detect_only={}, "
+                "lsb_dwell_threshold_ms={}, lsb_poll_interval_ms={}, "
+                "lsb_recheck_window_ms={}, lsb_diagnostic_logging={}",
                 path.string(),
                 g_settings.enabled,
                 g_settings.stats_interval_s,
@@ -120,7 +160,19 @@ namespace WorkerSpinLockFix::Config {
                 g_settings.sab_dwell_threshold_ms,
                 g_settings.sab_poll_interval_ms,
                 g_settings.sab_recheck_window_ms,
-                g_settings.sab_diagnostic_logging);
+                g_settings.sab_diagnostic_logging,
+                g_settings.sar_enabled,
+                g_settings.sar_detect_only,
+                g_settings.sar_dwell_threshold_ms,
+                g_settings.sar_poll_interval_ms,
+                g_settings.sar_recheck_window_ms,
+                g_settings.sar_diagnostic_logging,
+                g_settings.lsb_enabled,
+                g_settings.lsb_detect_only,
+                g_settings.lsb_dwell_threshold_ms,
+                g_settings.lsb_poll_interval_ms,
+                g_settings.lsb_recheck_window_ms,
+                g_settings.lsb_diagnostic_logging);
         }
         catch (const toml::parse_error& e) {
             logs::warn("Config parse error at {}: {} - using built-in defaults.",

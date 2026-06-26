@@ -19,6 +19,14 @@ namespace WorkerSpinLockFix::Stats {
         std::atomic<std::uint64_t> g_sa_stuck{ 0 };
         std::atomic<std::uint64_t> g_sa_released{ 0 };
 
+        // SiteARenderBreaker
+        std::atomic<std::uint64_t> g_sar_stuck{ 0 };
+        std::atomic<std::uint64_t> g_sar_released{ 0 };
+
+        // LeakedSpinLockBreaker
+        std::atomic<std::uint64_t> g_lsb_stuck{ 0 };
+        std::atomic<std::uint64_t> g_lsb_released{ 0 };
+
         std::thread       g_dump_thread;
         std::atomic<bool> g_running{ false };
         std::atomic<bool> g_started{ false };
@@ -27,14 +35,20 @@ namespace WorkerSpinLockFix::Stats {
             logs::info(
                 "stats: phase4: queued={} drained={} passthrough={} | "
                 "job_wait: stuck={} released={} | "
-                "site_a: stuck={} released={}",
+                "site_a: stuck={} released={} | "
+                "site_a_render: stuck={} released={} | "
+                "leaked_lock: stuck={} released={}",
                 g_p4_queued.load(std::memory_order_relaxed),
                 g_p4_drained.load(std::memory_order_relaxed),
                 g_p4_passthrough.load(std::memory_order_relaxed),
                 g_jw_stuck.load(std::memory_order_relaxed),
                 g_jw_released.load(std::memory_order_relaxed),
                 g_sa_stuck.load(std::memory_order_relaxed),
-                g_sa_released.load(std::memory_order_relaxed));
+                g_sa_released.load(std::memory_order_relaxed),
+                g_sar_stuck.load(std::memory_order_relaxed),
+                g_sar_released.load(std::memory_order_relaxed),
+                g_lsb_stuck.load(std::memory_order_relaxed),
+                g_lsb_released.load(std::memory_order_relaxed));
         }
 
         void DumpLoop(std::chrono::seconds interval) {
@@ -71,6 +85,20 @@ namespace WorkerSpinLockFix::Stats {
     }
     void OnSiteAReleased() noexcept {
         g_sa_released.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    void OnSiteARenderStuck() noexcept {
+        g_sar_stuck.fetch_add(1, std::memory_order_relaxed);
+    }
+    void OnSiteARenderReleased() noexcept {
+        g_sar_released.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    void OnLeakedLockStuck() noexcept {
+        g_lsb_stuck.fetch_add(1, std::memory_order_relaxed);
+    }
+    void OnLeakedLockReleased() noexcept {
+        g_lsb_released.fetch_add(1, std::memory_order_relaxed);
     }
 
     void StartPeriodicDump() {

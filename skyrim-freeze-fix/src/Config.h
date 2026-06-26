@@ -114,6 +114,87 @@ namespace WorkerSpinLockFix::Config {
 
         // Verbose per-decision logging for the watchdog.
         bool sab_diagnostic_logging{ false };
+
+        // ---- SiteARenderBreaker (render-side Site-A worker-ack recovery) ---
+        //
+        // Recovers the RENDER-side counterpart of the Site-A worker-ack
+        // deadlock (case-study 29 §6): the render/worker thread parks in the
+        // per-task cloth-join (id 34557) waiting on a dispatched sub-task
+        // that never completes, so it never signals Singleton-A's worker-ack
+        // and any consumer (transitively, main) hangs. First captured in
+        // freeze_2026-06-24_053440. See SiteARenderBreaker.h for the
+        // mechanism.
+
+        // Master switch for the module.
+        bool sar_enabled{ true };
+
+        // Detect-only (default): when the deadlock signature is seen, log it
+        // but do NOT alter engine behaviour. Set to false to actually deliver
+        // the missing worker-ack (SetEvent on the captured handle). Ships true
+        // until the release path is field-validated against a FreezeLogger
+        // v0.9.0 render-side capture.
+        bool sar_detect_only{ true };
+
+        // How long the render worker must be parked in id 34557 before the
+        // module considers it stuck. id 34557 normally returns every frame
+        // (~16 ms), so this is far above any legitimate join, well below the
+        // FreezeLogger 15 s watchdog.
+        std::uint32_t sar_dwell_threshold_ms{ 5000 };
+
+        // Watchdog poll cadence.
+        std::uint32_t sar_poll_interval_ms{ 1000 };
+
+        // Zero-progress confirmation window. After the dwell threshold the
+        // watchdog samples Singleton-A, waits this long, and re-samples; it
+        // only acts if the worker stayed in the SAME join episode (still
+        // parked, work-id + ack handle unchanged) with the ack still
+        // unsignalled across the window. Raising this value is more
+        // conservative.
+        std::uint32_t sar_recheck_window_ms{ 1500 };
+
+        // Verbose per-decision logging for the watchdog.
+        bool sar_diagnostic_logging{ false };
+
+        // ---- LeakedSpinLockBreaker (leaked BSSpinLock recovery) -----------
+        //
+        // Recovers the engine from the LEAKED BSSpinLock hard-freeze
+        // (case-study 30, proven in freeze_2026-06-25_222116): a thread
+        // (main, via the HDT-SMP cloth chain -> BSSpinLock::Acquire id
+        // 12210) spins forever on a heap BSSpinLock whose owner is an idle
+        // worker parked in the pool (id 68058) that acquired the lock and
+        // went idle without releasing it. The unlock leaked; SetEvent
+        // cannot help. A watchdog proves the lock is steady-state held by a
+        // parked thread and, in active mode, force-releases it. See
+        // LeakedSpinLockBreaker.h for the mechanism.
+
+        // Master switch for the module.
+        bool lsb_enabled{ true };
+
+        // Detect-only (default): when the leaked-lock signature is seen,
+        // log it but do NOT alter engine state. Set to false to actually
+        // force-release the leaked lock. Ships true until the release path
+        // is field-validated.
+        bool lsb_detect_only{ true };
+
+        // How long the lock must be held UNCHANGED by a parked owner before
+        // the module treats it as leaked. Far above any legitimate spinlock
+        // hold (microseconds), well below the FreezeLogger 15 s watchdog.
+        std::uint32_t lsb_dwell_threshold_ms{ 5000 };
+
+        // Watchdog poll cadence. Each poll suspends/inspects every thread
+        // once to look for a thread contending a BSSpinLock, so keep this at
+        // or above ~1000 ms.
+        std::uint32_t lsb_poll_interval_ms{ 1000 };
+
+        // Steady-state confirmation window. After the dwell threshold the
+        // watchdog pauses this long and re-proves the leak (owner still
+        // parked at the same RIP, lock word unchanged) before acting. Any
+        // movement stands it down, so raising this value is more
+        // conservative.
+        std::uint32_t lsb_recheck_window_ms{ 1500 };
+
+        // Verbose per-decision logging for the watchdog.
+        bool lsb_diagnostic_logging{ false };
     };
 
     void Init();

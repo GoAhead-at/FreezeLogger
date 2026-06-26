@@ -7,6 +7,79 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 Diagnostic-only output format changes are not treated as a breaking SemVer event
 unless they remove or rename an existing section — fields may grow without notice.
 
+## [0.11.1] — 2026-06-25
+
+### Changed
+- **Parked-holder probe now identifies any waitable object type and proves the
+  leak.** The owner wait scan uses `NtQueryObject` to report the kernel type
+  (`Event`/`Semaphore`/`Mutant`) of each valid handle in the holder's regs/stack —
+  the engine worker pool parks on a *Semaphore*, which the previous Event-only
+  probe silently skipped (it mislabeled a stray `handle 0x4` instead). The handle
+  floor was raised to `0x10` to drop pseudo/low values. A new steady-state check
+  re-reads the contended lock's owner/state ~150 ms apart and states whether the
+  lock is effectively **LEAKED** (frozen) versus transiently held — the go/no-go
+  evidence for a force-release recovery. The misleading "wake the holder via
+  auto-reset event" suggestion was replaced: an idle-pool worker woken via its
+  Semaphore looks for work, it does not release a leaked lock.
+
+## [0.11.0] — 2026-06-25
+
+### Added
+- **Parked-holder detail probe.** When the wait-for chain finds a `BSSpinLock`
+  held by a worker parked in a kernel wait (the root-cause shape), it now dumps the
+  data needed to design a *safe* recovery layer: (1) the lock object and its
+  surrounding memory, resolving any Address-Library code pointer in the window to
+  identify the owning class / what the lock guards; and (2) a scan of the parked
+  owner's registers and stack for valid current-process **Event handles** (type +
+  signaled state), i.e. the handle a "wake the holder" recovery would `SetEvent` so
+  the worker resumes and releases the lock. Aimed at the
+  `freeze_2026-06-25_190341` deadlock (worker TID 32004 holding the lock across an
+  `id 68058` worker-pool park).
+
+## [0.10.1] — 2026-06-25
+
+### Fixed
+- **Wait-for chain no longer mis-reports a parked lock owner as "RUNNING".**
+  The owner's run state is now classified by the *module* its RIP lives in
+  (`GetModuleHandleExW`-by-address) instead of by symbol text. DbgHelp usually
+  cannot symbolicate `ntdll`/`KERNELBASE` on a player's machine and returns a bare
+  address, which made the old substring check fall through to "RUNNING". In
+  `freeze_2026-06-25_190341` this hid the root cause: lock owner TID 32004 is a
+  parked engine worker (`id 68058`/`id 67147`, `NtWaitForSingleObject`) holding the
+  `BSSpinLock` main is blocked on. The chain now prints `>>> ROOT CAUSE: a
+  BSSpinLock is held across a thread park`, names the holder, and lists the owner's
+  Address-Library-resolved engine frames so the parked-worker site is visible
+  inline.
+
+## [0.10.0] — 2026-06-25
+
+### Added
+- **BSSpinLock wait-for chain (deadlock-cycle resolver).** The long-form
+  `Main::Update wait-helper probe` now follows the lock owner main is contending,
+  hop by hop, to distinguish a recoverable lost-wakeup from a true deadlock and to
+  name the holder a proper breaker must target. For the main thread it isolates the
+  specific `BSSpinLock` whose `[+0]` owner is a *different, live* thread with `[+4]`
+  state held, then inspects that owner: if the owner is itself spinning on another
+  lock the walk continues; if the owner is **parked in a kernel wait while still
+  holding the lock**, the report calls out "lock held across a park — main can never
+  acquire it" and points the fix at that holder; if the chain returns to a thread
+  already visited it prints `>>> DEADLOCK CYCLE` and states explicitly that
+  `SetEvent` on a worker-ack will not break it. Motivated by
+  `freeze_2026-06-25_103341`, where render-side ack recovery was active yet main
+  still froze in `BSSpinLock::Acquire` (`id 12210`) reached via the HDT-SMP cloth
+  chain (`id 35565`) — a site no existing WorkerSpinLockFix layer hooks.
+  Owner frames are symbolized (`module!sym+0x…`) and annotated with Address Library
+  IDs (`[id NNNNN +0x…]`).
+
+### Fixed
+- **Render-side Site-A probe no longer reads RBP as the Singleton-A instance.**
+  `id 34557`'s prologue does not establish `rbp = rcx`, so the previous
+  `[RBP+0x60]` read access-violated (SEH `0xc0000005`) in `freeze_2026-06-24/25`.
+  The probe now reads the resolved **global Singleton-A** instance (the same one the
+  main-side Site-A uses) so the worker-ack handle and its signaled state print
+  reliably; it also warns that `SetEvent` alone will not lift the freeze when the
+  wait-for chain shows main is additionally stuck on a `BSSpinLock`.
+
 ## [0.9.0] — 2026-06-24
 
 ### Added

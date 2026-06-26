@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
   "name": "workerspinlockfix",
-  "version": "1.0.0",
+  "version": "2.6.0",
   "description": "SKSE plugin for Skyrim SE 1.5.97. Surgical inline hook on BSSpinLock::Acquire that detects AB-BA cycles between two engine BSSpinLock globals at runtime and force-releases the offending lock so the game keeps running.",
   "dependencies": [
     "commonlibsse-ng",

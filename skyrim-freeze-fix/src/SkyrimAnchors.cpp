@@ -73,6 +73,45 @@ namespace WorkerSpinLockFix::SkyrimAnchors {
         // sub rsp, 0x20          =>  48 83 EC 20
         constexpr unsigned char kSubRsp20[]  = { 0x48, 0x83, 0xEC, 0x20 };
 
+        // ----- Render-side Site-A join (id 34557) entry signature -------
+        // Byte-unique in .text (verified against the unpacked SE 1.5.97
+        // binary): the render thread's per-task cloth-join function. The
+        // `mov byte [rcx+0x71],1` flag write right after the 3-push /
+        // sub-rsp-0x30 prologue is the distinctive tail. The function takes
+        // its Singleton-A in rcx, so there is no rip-relative slot to derive
+        // -- the breaker captures the singleton from the first argument.
+        //   push rbx; push rsi; push rdi; sub rsp,0x30; mov byte [rcx+0x71],1
+        constexpr unsigned char kRenderTaskSig[] = {
+            0x40, 0x53,                         // push rbx
+            0x56,                               // push rsi
+            0x57,                               // push rdi
+            0x48, 0x83, 0xEC, 0x30,             // sub  rsp, 0x30
+            0xC6, 0x41, 0x71, 0x01,             // mov  byte [rcx+0x71], 1
+        };
+        constexpr std::size_t kRenderTaskSigLen = sizeof(kRenderTaskSig);
+
+        // ----- BSSpinLock spin-retry site signature (id 12210) ----------
+        // The spin loop inside BSSpinLock::Acquire (see header). Only the
+        // call displacement (bytes 6..9) is version-variable, so those are
+        // wildcarded. The `xor eax,eax` at offset 10 is the spin-retry
+        // return address a contending thread shows on its stack.
+        //   inc ebx / xor ecx,ecx / call [rip+d32] / xor eax,eax /
+        //   lock cmpxchg [rdi+4], r14d
+        constexpr unsigned char kSpinSig[] = {
+            0xFF, 0xC3,                          // inc  ebx
+            0x33, 0xC9,                          // xor  ecx, ecx
+            0xFF, 0x15, 0x00, 0x00, 0x00, 0x00,  // call [rip+d32] (wildcarded)
+            0x33, 0xC0,                          // xor  eax, eax  <- spin-retry ret
+            0xF0, 0x44, 0x0F, 0xB1, 0x77, 0x04,  // lock cmpxchg [rdi+4], r14d
+        };
+        constexpr unsigned char kSpinMask[] = {
+            1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1,
+        };
+        constexpr std::size_t kSpinSigLen = sizeof(kSpinSig);
+        static_assert(sizeof(kSpinMask) == sizeof(kSpinSig),
+            "spin sig/mask length mismatch");
+        constexpr std::uintptr_t kSpinRetOff = 10;  // xor eax,eax within kSpinSig
+
         // Locate the executable .text section of an in-memory PE image.
         bool FindTextSection(std::uintptr_t a_base,
                              std::uintptr_t& a_textVA,
@@ -223,6 +262,57 @@ namespace WorkerSpinLockFix::SkyrimAnchors {
             }
         }
 
+        // Forward scan for the render-side join (id 34557) entry signature
+        // (no wildcards). SEH-guarded like the scans above.
+        std::uintptr_t ScanRenderTaskSignature(std::uintptr_t a_start,
+                                               std::uintptr_t a_len) noexcept
+        {
+            __try {
+                const auto* p   = reinterpret_cast<const unsigned char*>(a_start);
+                const auto  end = (a_len > kRenderTaskSigLen)
+                                      ? (a_len - kRenderTaskSigLen) : 0;
+                for (std::uintptr_t i = 0; i < end; ++i) {
+                    if (p[i] == kRenderTaskSig[0] &&
+                        std::memcmp(p + i, kRenderTaskSig, kRenderTaskSigLen) == 0) {
+                        return a_start + i;
+                    }
+                }
+                return 0;
+            } __except (EXCEPTION_EXECUTE_HANDLER) {
+                return 0;
+            }
+        }
+
+        // Masked forward scan that collects every spin-retry site in
+        // [a_start, a_start+a_len). Writes the spin-retry RETURN addresses
+        // (match VA + kSpinRetOff) into a_out, up to a_max, and returns the
+        // count found. SEH-guarded like the scans above.
+        std::size_t ScanSpinSignatures(std::uintptr_t  a_start,
+                                       std::uintptr_t  a_len,
+                                       std::uintptr_t* a_out,
+                                       std::size_t     a_max) noexcept
+        {
+            __try {
+                const auto* p   = reinterpret_cast<const unsigned char*>(a_start);
+                const auto  end = (a_len > kSpinSigLen) ? (a_len - kSpinSigLen) : 0;
+                std::size_t n   = 0;
+                for (std::uintptr_t i = 0; i < end && n < a_max; ++i) {
+                    if (p[i] != kSpinSig[0]) continue;
+                    bool hit = true;
+                    for (std::size_t j = 1; j < kSpinSigLen; ++j) {
+                        if (kSpinMask[j] && p[i + j] != kSpinSig[j]) {
+                            hit = false;
+                            break;
+                        }
+                    }
+                    if (hit) a_out[n++] = a_start + i + kSpinRetOff;
+                }
+                return n;
+            } __except (EXCEPTION_EXECUTE_HANDLER) {
+                return 0;
+            }
+        }
+
     }   // anonymous
 
     void Init() {
@@ -287,6 +377,59 @@ namespace WorkerSpinLockFix::SkyrimAnchors {
             }
         }
 
+        // ----- Render-side Site-A join (id 34557) -- resolved independently
+        // A failure here disables only the SiteARenderBreaker; the main-side
+        // Site-A and Site-B resolution are unaffected.
+        {
+            const auto renderTaskVA = ScanRenderTaskSignature(textVA, textSize);
+            if (renderTaskVA != 0) {
+                g_anchors.renderTaskFn       = renderTaskVA;
+                g_anchors.renderTaskFnRVA    = renderTaskVA - base;
+                g_anchors.renderTaskResolved = true;
+                logs::info(
+                    "SkyrimAnchors::Init - resolved: render-side Site-A join "
+                    "id 34557 @0x{:x} (+0x{:x})",
+                    renderTaskVA, g_anchors.renderTaskFnRVA);
+            } else {
+                logs::warn(
+                    "SkyrimAnchors::Init - render-side Site-A join (id 34557) "
+                    "signature not found in .text; SiteARenderBreaker disabled "
+                    "on this runtime");
+            }
+        }
+
+        // ----- BSSpinLock spin-retry site(s) -- resolved independently --
+        // A failure here disables only the LeakedSpinLockBreaker; every
+        // other anchor is unaffected.
+        {
+            std::uintptr_t rets[Anchors::kMaxSpinRets] = {};
+            const auto n = ScanSpinSignatures(
+                textVA, textSize, rets, Anchors::kMaxSpinRets);
+            if (n != 0) {
+                g_anchors.spinRetCount = static_cast<std::uint32_t>(n);
+                for (std::size_t i = 0; i < n; ++i) {
+                    g_anchors.spinRets[i]    = rets[i];
+                    g_anchors.spinRetsRVA[i] = rets[i] - base;
+                }
+                g_anchors.spinResolved = true;
+                std::string sites;
+                for (std::size_t i = 0; i < n; ++i) {
+                    sites += std::format(
+                        "{}0x{:x} (+0x{:x})", i == 0 ? "" : ", ",
+                        rets[i], g_anchors.spinRetsRVA[i]);
+                }
+                logs::info(
+                    "SkyrimAnchors::Init - resolved: {} BSSpinLock spin-retry "
+                    "site(s) [{}] (LeakedSpinLockBreaker armed)",
+                    n, sites);
+            } else {
+                logs::warn(
+                    "SkyrimAnchors::Init - BSSpinLock spin-retry signature not "
+                    "found in .text; LeakedSpinLockBreaker disabled on this "
+                    "runtime");
+            }
+        }
+
         const auto bodyVA = ScanSignature(textVA, textSize);
         if (bodyVA == 0) {
             g_diag = std::format(
@@ -330,6 +473,14 @@ namespace WorkerSpinLockFix::SkyrimAnchors {
     bool AvailableSiteA() noexcept {
         return g_anchors.siteAResolved && g_anchors.siteALockFn != 0 &&
                g_anchors.singletonASlot != 0;
+    }
+
+    bool AvailableSiteARender() noexcept {
+        return g_anchors.renderTaskResolved && g_anchors.renderTaskFn != 0;
+    }
+
+    bool AvailableSpinRetry() noexcept {
+        return g_anchors.spinResolved && g_anchors.spinRetCount != 0;
     }
 
     const char* DiagnosticString() { return g_diag.c_str(); }
