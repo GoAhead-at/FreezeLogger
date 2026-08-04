@@ -1,11 +1,57 @@
 # Changelog
 
 All notable changes to **FreezeLogger** are documented in this file.
+**WorkerSpinLockFix** release notes live in
+[`skyrim-freeze-fix/CHANGELOG.md`](skyrim-freeze-fix/CHANGELOG.md)
+(recent WSLF entries are mirrored below for convenience).
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Diagnostic-only output format changes are not treated as a breaking SemVer event
 unless they remove or rename an existing section — fields may grow without notice.
+
+---
+
+## WorkerSpinLockFix
+
+## [2.6.1] — 2026-08-04
+
+### Fixed
+- **`LeakedSpinLockBreaker` watchdog no longer CTDs on wild reads during
+  load/teardown.** Field crash bucket `CTD-7b4ecc21` (SE 1.5.97) faulted inside
+  `TryReadQword` ~1.4 s after the watchdog started, with `StateFlags: Loading`
+  and a wild read address harvested from a half-built thread context. SEH alone
+  could not catch it — during loader transitions / process teardown the
+  exception dispatcher does not always unwind a hardware fault. Every harvested
+  pointer is now validated with `VirtualQuery` (committed + readable; writable
+  for the force-release) **before** any dereference, with SEH kept only as a
+  TOCTOU backstop. The watchdog thread is still created at install but stays
+  fully idle (no thread suspension, no probing) until the SKSE `kDataLoaded`
+  message arms it, so it never scans during the load/menu window where there is
+  also no gameplay freeze to break. Detection, dwell/recheck gates, and
+  force-release behaviour are unchanged.
+
+## [2.6.0] — 2026-06-26
+
+### Added
+- **`LeakedSpinLockBreaker` (Layer 5)** — recovery for the leaked-`BSSpinLock`
+  freeze proven by FreezeLogger v0.11.1 (`freeze_2026-06-25_222116`, case-study
+  30). A thread (typically main, via the HDT-SMP cloth chain `id 35565` →
+  `BSSpinLock::Acquire` `id 12210`) spins forever on a heap lock whose owner is
+  an idle worker parked in the pool (`id 68058`) that acquired the lock and went
+  idle without releasing it — a lock-ownership deadlock no `SetEvent` (Layers
+  2–4) can break. A watchdog (no inline hook) scans suspended threads for a
+  contender at a version-independent spin-retry signature, follows the owner,
+  and — only once the owner is provably parked and the lock's `(owner,state)`
+  word plus the holder's RIP stay byte-for-byte unchanged across the dwell +
+  recheck window — force-releases via `InterlockedCompareExchange64` (no-op if
+  anything moved). Ships **detect-only** by default. Field note: active mode
+  breaks the hard-freeze but can recur as a stutter loop while the leak producer
+  remains.
+
+---
+
+## FreezeLogger
 
 ## [0.11.1] — 2026-06-25
 

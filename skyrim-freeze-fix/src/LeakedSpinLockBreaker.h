@@ -40,6 +40,14 @@ namespace WorkerSpinLockFix::LeakedSpinLockBreaker {
     // until the force-release path is field-validated.
 
     bool Install();
+
+    // Arm the scanning phase. The watchdog thread is created at Install but
+    // stays idle (no thread suspension, no memory probing) until this is
+    // called from the SKSE kDataLoaded message, so it never scans during the
+    // volatile load/menu phase where a wild harvested pointer caused the
+    // load-time CTD in crash bucket CTD-7b4ecc21.
+    void OnDataLoaded();
+
     void Stop();
 
 }

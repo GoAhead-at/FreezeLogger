@@ -6,6 +6,7 @@
 #include "Stats.h"
 
 #include <format>
+#include <limits>
 
 #include <tlhelp32.h>
 
@@ -28,10 +29,75 @@ namespace WorkerSpinLockFix::LeakedSpinLockBreaker {
         std::thread       g_watchdog;
         std::atomic<bool> g_running{ false };
 
+        // The watchdog only scans once the game has finished loading its
+        // data (set at SKSE kDataLoaded). Before that the engine's threads
+        // and address space are still being built up and any wild pointer
+        // harvested from a half-initialised thread context is far more
+        // likely; the load-time CTD in crash bucket CTD-7b4ecc21 faulted
+        // here exactly that way. There is also nothing to recover during a
+        // load screen, so staying idle until data-loaded removes the entire
+        // window at no functional cost.
+        std::atomic<bool> g_active{ false };
+
         std::uint64_t NowMs() noexcept { return ::GetTickCount64(); }
 
-        // ----- SEH-guarded raw read -----------------------------------------
+        // ----- memory-validated raw read ------------------------------------
+        // True iff [a_addr, a_addr+a_size) lies entirely inside a single
+        // committed, readable region. We validate with VirtualQuery BEFORE
+        // dereferencing because SEH alone is not a reliable guard for a wild
+        // read: during process teardown (the "exit to desktop CTD") or a
+        // loader transition the exception dispatcher cannot always unwind a
+        // hardware fault, so the access violation escapes as a hard crash
+        // instead of being caught. VirtualQuery never dereferences the
+        // pointer, so it is safe to call on arbitrary harvested values.
+        bool IsReadable(std::uintptr_t a_addr, std::size_t a_size) noexcept {
+            if (a_addr == 0 || a_size == 0) return false;
+            if (a_addr > (std::numeric_limits<std::uintptr_t>::max)() - a_size) {
+                return false;
+            }
+            MEMORY_BASIC_INFORMATION mbi{};
+            if (::VirtualQuery(reinterpret_cast<LPCVOID>(a_addr), &mbi,
+                               sizeof(mbi)) == 0) {
+                return false;
+            }
+            if (mbi.State != MEM_COMMIT) return false;
+            if (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) return false;
+            constexpr DWORD kReadable =
+                PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY |
+                PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE |
+                PAGE_EXECUTE_WRITECOPY;
+            if ((mbi.Protect & kReadable) == 0) return false;
+            const auto base = reinterpret_cast<std::uintptr_t>(mbi.BaseAddress);
+            const auto end  = base + mbi.RegionSize;
+            return a_addr >= base && (a_addr + a_size) <= end;
+        }
+
+        // True iff the range is committed AND writable (for the force-release
+        // interlocked store). Excludes read-only / copy-on-write pages.
+        bool IsWritable(std::uintptr_t a_addr, std::size_t a_size) noexcept {
+            if (a_addr == 0 || a_size == 0) return false;
+            if (a_addr > (std::numeric_limits<std::uintptr_t>::max)() - a_size) {
+                return false;
+            }
+            MEMORY_BASIC_INFORMATION mbi{};
+            if (::VirtualQuery(reinterpret_cast<LPCVOID>(a_addr), &mbi,
+                               sizeof(mbi)) == 0) {
+                return false;
+            }
+            if (mbi.State != MEM_COMMIT) return false;
+            if (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) return false;
+            constexpr DWORD kWritable =
+                PAGE_READWRITE | PAGE_EXECUTE_READWRITE;
+            if ((mbi.Protect & kWritable) == 0) return false;
+            const auto base = reinterpret_cast<std::uintptr_t>(mbi.BaseAddress);
+            const auto end  = base + mbi.RegionSize;
+            return a_addr >= base && (a_addr + a_size) <= end;
+        }
+
+        // VirtualQuery-validated, then SEH-guarded as a second line of
+        // defence against a TOCTOU unmap between the query and the read.
         bool TryReadQword(std::uintptr_t a_addr, std::uintptr_t& a_out) noexcept {
+            if (!IsReadable(a_addr, sizeof(std::uintptr_t))) return false;
             __try {
                 a_out = *reinterpret_cast<volatile std::uintptr_t*>(a_addr);
                 return true;
@@ -217,6 +283,7 @@ namespace WorkerSpinLockFix::LeakedSpinLockBreaker {
         // exactly the (owner,state) word we proved leaked, so we can never
         // clobber a lock that changed in the last instant. SEH-guarded.
         bool ForceRelease(std::uintptr_t a_lock, std::uint64_t a_expected) noexcept {
+            if (!IsWritable(a_lock, sizeof(LONG64))) return false;
             __try {
                 auto* p = reinterpret_cast<volatile LONG64*>(a_lock);
                 const LONG64 prev = ::InterlockedCompareExchange64(
@@ -316,6 +383,13 @@ namespace WorkerSpinLockFix::LeakedSpinLockBreaker {
             while (g_running.load(std::memory_order_relaxed)) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(g_poll_ms));
                 if (!g_running.load(std::memory_order_relaxed)) break;
+
+                // Stay idle (no thread suspension, no memory probing) until
+                // the game has finished loading its data. Scanning during the
+                // load/menu phase is both pointless (no gameplay freeze to
+                // break) and the riskiest window for harvesting a wild pointer
+                // out of a half-built thread context.
+                if (!g_active.load(std::memory_order_acquire)) continue;
                 ++pollno;
 
                 // Snapshot every thread once (suspend/getcontext/resume).
@@ -461,16 +535,26 @@ namespace WorkerSpinLockFix::LeakedSpinLockBreaker {
         g_watchdog.detach();
 
         logs::info(
-            "[LeakedSpinLockBreaker] armed. {} spin-retry site(s) tracked. "
-            "mode={}, dwell_ms={}, poll_ms={}, recheck_ms={}, diag={}.",
+            "[LeakedSpinLockBreaker] armed (idle until data-loaded). {} "
+            "spin-retry site(s) tracked. mode={}, dwell_ms={}, poll_ms={}, "
+            "recheck_ms={}, diag={}.",
             g_spinCount,
             g_detect_only ? "DETECT-ONLY" : "ACTIVE (will force-release)",
             g_dwell_ms, g_poll_ms, g_recheck_ms, g_diag ? "ON" : "OFF");
         return true;
     }
 
+    void OnDataLoaded() {
+        if (!g_active.exchange(true, std::memory_order_release)) {
+            logs::info(
+                "[LeakedSpinLockBreaker] data loaded; watchdog scanning is "
+                "now active.");
+        }
+    }
+
     void Stop() {
         g_running.store(false, std::memory_order_relaxed);
+        g_active.store(false, std::memory_order_relaxed);
     }
 
 }

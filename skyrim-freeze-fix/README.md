@@ -27,7 +27,13 @@ distinct engine hard-freeze classes**:
 A single DLL installs on both SE 1.5.97 and AE 1.6.x (VR is refused).
 See [Multi-version support](#multi-version-support) for the SE↔AE map.
 
-**v2.6.0** is the current release — it adds the `LeakedSpinLockBreaker`
+**v2.6.1** is the current release — a memory-safety hardening of the
+`LeakedSpinLockBreaker` watchdog: every harvested pointer is validated with
+`VirtualQuery` (committed + readable; writable for the force-release) **before**
+any dereference, and the watchdog stays idle until the game finishes loading
+(SKSE `kDataLoaded`). This closes a load-time / teardown access-violation CTD
+that faulted in the watchdog's read path; detection and recovery behaviour are
+unchanged. It builds on **v2.6.0**, which adds the `LeakedSpinLockBreaker`
 layer (Layer 5), a watchdog that force-releases a provably-leaked
 `BSSpinLock` held by a parked idle worker (case-study 30; proven by
 FreezeLogger v0.11.1 in `freeze_2026-06-25_222116`), on top of
@@ -49,9 +55,12 @@ independent fixes that share no state.
 
 ### Version history
 
+Full release notes: [`CHANGELOG.md`](CHANGELOG.md).
+
 | Version | Status | Summary |
 |---|---|---|
-| v2.6.0 | **Current.** | Adds **`LeakedSpinLockBreaker`** (Layer 5) — recovery for the **leaked `BSSpinLock`** freeze (case-study 30; proven by FreezeLogger v0.11.1's parked-holder steady-state probe in `freeze_2026-06-25_222116`). A thread (main, via the HDT-SMP cloth chain `id 35565` → `BSSpinLock::Acquire` `id 12210`) spins forever on a heap lock whose `[+0]` owner is an idle worker parked in a kernel wait inside the pool (`id 68058`, on the pool Semaphore) that acquired the lock and went idle **without releasing it** — a lock-ownership deadlock no `SetEvent` (Layers 2–4) can break. A watchdog (no inline hook) scans suspended threads for one contending a lock at a version-independent spin-retry signature, follows the owner, and — only once the owner is provably parked and the lock's `(owner,state)` word plus the holder's RIP stay byte-for-byte unchanged across the dwell + recheck window — force-releases the lock via an `InterlockedCompareExchange64` that no-ops if anything moved. Ships **detect-only** by default. **Field validation:** active mode breaks the hard-freeze but recurs as a stutter loop while the leak producer stays active; disabling a correlated actor ref (`000198DC` / Dervenin) stopped recurrence. |
+| v2.6.1 | **Current.** | Memory-safety hardening of the `LeakedSpinLockBreaker` watchdog after a field CTD (bucket `CTD-7b4ecc21`) that faulted in its read path during loading. Two changes, no behavioural change to detection/recovery: (1) every harvested pointer is validated with `VirtualQuery` (committed + readable; writable for the force-release) **before** any dereference — SEH alone could not catch a wild read during process teardown or a loader transition, where the exception dispatcher cannot unwind a hardware fault; (2) the watchdog thread is created at install but stays fully idle (no thread suspension, no probing) until the SKSE `kDataLoaded` message arms it, removing the volatile load/menu window where a half-built thread context yields wild pointers and where there is no gameplay freeze to break anyway. |
+| v2.6.0 | Superseded by v2.6.1. | Adds **`LeakedSpinLockBreaker`** (Layer 5) — recovery for the **leaked `BSSpinLock`** freeze (case-study 30; proven by FreezeLogger v0.11.1's parked-holder steady-state probe in `freeze_2026-06-25_222116`). A thread (main, via the HDT-SMP cloth chain `id 35565` → `BSSpinLock::Acquire` `id 12210`) spins forever on a heap lock whose `[+0]` owner is an idle worker parked in a kernel wait inside the pool (`id 68058`, on the pool Semaphore) that acquired the lock and went idle **without releasing it** — a lock-ownership deadlock no `SetEvent` (Layers 2–4) can break. A watchdog (no inline hook) scans suspended threads for one contending a lock at a version-independent spin-retry signature, follows the owner, and — only once the owner is provably parked and the lock's `(owner,state)` word plus the holder's RIP stay byte-for-byte unchanged across the dwell + recheck window — force-releases the lock via an `InterlockedCompareExchange64` that no-ops if anything moved. Ships **detect-only** by default. **Field validation:** active mode breaks the hard-freeze but recurs as a stutter loop while the leak producer stays active; disabling a correlated actor ref (`000198DC` / Dervenin) stopped recurrence. |
 | v1.0.0 | Released 2026-05-21, removed | Runtime breaker only: surgical hook on `BSSpinLock::Acquire`, lock-free wait-for graph, time-based confirmation, force-release via `InterlockedCompareExchange`. Retired in v2.3.0. |
 | v2.0.0–v2.0.3 | 2026-05-22 → 24, superseded | Added the structural fix (`Phase4Defer`) as the primary layer; fixed a 6-arg skyshard regression; rebased the LockB gates onto two surgical `Trampoline::write_call<5>` call-site patches; redesigned the reaper around `WaitGraph::SnapshotEdges`. See case-studies 22–26. |
 | v2.1.0 | Released 2026-06-03, superseded | Moved the runtime detector onto a `safetyhook` mid-hook at `id 12210 +0x8a` (the backoff retry point) so uncontended/recursive acquires ran native with zero added cost — removing hot-path overhead that stacked under framerate-amplifying mods (e.g. PureDark's upscaler). |

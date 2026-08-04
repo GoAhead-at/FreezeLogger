@@ -283,19 +283,66 @@ addresses the leaked-lock signature on main.
 
 ---
 
-## 8. Open questions
+## 8. v2.6.1 — watchdog memory-safety hardening
+
+A field crash report (crash bucket `CTD-7b4ecc21`, SE 1.5.97) put the faulting
+instruction inside the watchdog's own read path:
+
+```
+EXCEPTION_ACCESS_VIOLATION (0xC0000005), read at 0x3493200000
+tid=21648 … LeakedSpinLockBreaker::TryReadQword+0x0 [LeakedSpinLockBreaker.cpp:34]
+StateFlags: Loading   (≈1.4 s after the watchdog thread was created)
+```
+
+A separate, **clean** ~38-minute session log from the same v2.6.0 build and the
+same detect-only config showed the breaker arming on the correct spin-retry
+site (`+0x132c5a`) and reporting `leaked_lock: stuck=0` for the entire run with
+no crash. The two together establish the failure shape:
+
+1. **It is not a steady-state problem.** In normal play the watchdog finds no
+   candidate and the session is stable.
+2. **It is a load-time / teardown race.** The crash struck during the load
+   phase, ~1.4 s after the watchdog started, dereferencing a wild pointer
+   (`0x3493200000`) harvested from a half-initialised thread context.
+3. **SEH alone is not a sufficient guard.** `TryReadQword` was wrapped in
+   `__try/__except`, yet the access violation became an unhandled CTD. During
+   process teardown (the separately reported "exit to desktop CTD") or a loader
+   transition, the OS exception dispatcher cannot always unwind a hardware
+   fault, so the read escapes the handler.
+
+### Fix (no change to detection or recovery behaviour)
+
+- **VirtualQuery-validated reads.** `TryReadQword` (and the force-release
+  write) now confirm the target range is committed and readable (writable for
+  the release) with `VirtualQuery` **before** any dereference. `VirtualQuery`
+  never touches the pointer, so it is safe on arbitrary harvested values; SEH
+  is retained only as a second line of defence against a TOCTOU unmap.
+- **Idle until data-loaded.** The watchdog thread is still created at install
+  but performs no thread suspension and no memory probing until the SKSE
+  `kDataLoaded` message arms it. This removes the entire load/menu window —
+  where the crash occurred and where there is no gameplay freeze to break — and
+  also keeps it idle on the main menu.
+
+The leak detection, dwell/recheck gates, and force-release path are byte-for-byte
+unchanged; v2.6.1 only narrows *when* the watchdog runs and *how* it validates a
+read.
+
+---
+
+## 9. Open questions
 
 - Exact engine/HDT-SMP instruction path that skips `Unlock` before `id 68058`.
 - Whether specific actor setups (skeleton, outfit, SMP config) widen the leak
   window — the Dervenin correlation is one data point.
 - Optimal dwell/poll tuning to reduce stutter severity without increasing
   false-release risk (defaults are conservative).
-- CTD reported in one session after switching **back** to `detect_only = true`
-  following active mode — cause unconfirmed; may be unrelated to Layer 5.
+- Whether the v2.6.1 hardening fully closes the exit-to-desktop CTD path
+  (VirtualQuery+SEH makes individual teardown reads safe, but there is no
+  reliable SKSE shutdown message on 1.5.97 to join the detached watchdog).
 
 ---
 
-## 9. References
+## 10. References
 
 - FreezeLogger CHANGELOG v0.10.0–v0.11.1 — wait-for chain, parked-holder,
   steady-state leak proof.

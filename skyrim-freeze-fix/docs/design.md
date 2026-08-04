@@ -787,6 +787,26 @@ Defaults: `enabled=true`, `detect_only=true`, `dwell_threshold_ms=5000`,
 **does** suspend threads briefly each poll (snapshot context only); this is
 the trade-off for lock-state inspection without a wrap point.
 
+**Memory-safety hardening (v2.6.1).** Because the watchdog harvests candidate
+lock pointers from other threads' registers and stacks, it can hold values that
+are not valid pointers. A field CTD (`CTD-7b4ecc21`) faulted in `TryReadQword`
+on such a value during loading, ~1.4 s after the thread started. SEH alone is
+not a reliable guard here: during process teardown (exit-to-desktop) or a loader
+transition, the OS exception dispatcher cannot always unwind a hardware fault,
+so the access violation escapes the `__except`. Two mitigations, neither of
+which changes detection or recovery behaviour:
+
+1. **VirtualQuery before dereference.** `TryReadQword` (and the force-release
+   write) confirm the target range is committed and readable/writable via
+   `VirtualQuery` — which never touches the pointer — before reading. SEH is
+   kept only as a fallback for a TOCTOU unmap.
+2. **Idle until data-loaded.** The watchdog thread is created at install but
+   does no thread suspension and no probing until the SKSE `kDataLoaded` message
+   sets its active flag, removing the load/menu window entirely (where the crash
+   occurred and where there is no gameplay freeze to break). There is no
+   reliable SKSE shutdown message on 1.5.97 to join the detached thread, so the
+   VirtualQuery guard is also what protects the exit path.
+
 ---
 
 ## 4. Slow-path invariants

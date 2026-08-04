@@ -2,6 +2,7 @@
 
 #include "Config.h"
 #include "Hooks.h"
+#include "LeakedSpinLockBreaker.h"
 #include "Logger.h"
 #include "Stats.h"
 
@@ -67,6 +68,11 @@ namespace {
             break;
         case SKSE::MessagingInterface::kDataLoaded:
             logs::info("Data files loaded; plugin remains active.");
+            // Arm the LeakedSpinLockBreaker watchdog only now: it stays idle
+            // through the load/menu phase (where a wild harvested pointer
+            // caused a load-time CTD) and begins scanning once the game is
+            // interactive.
+            WorkerSpinLockFix::LeakedSpinLockBreaker::OnDataLoaded();
             break;
         default:
             break;
